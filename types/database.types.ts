@@ -183,6 +183,74 @@ export type Database = {
             referencedColumns: ["id"]
           }
         ]
+      },
+      kontrol_ppn: {
+        Row: {
+          id: string
+          user_id: string
+          masa: string
+          tanggal: string
+          penyewaan_dpp: number
+          penyewaan_ppn: number
+          pengadaan_dpp: number
+          pengadaan_ppn: number
+          pembelian_dpp: number
+          pembelian_ppn: number
+          ppn_keluaran: number
+          ppn_masukan: number
+          kurang_bayar: number
+          status_lapor: string | null
+          ntpn: string | null
+          tgl_bayar: string | null
+          tgl_lapor: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          masa: string
+          tanggal: string
+          penyewaan_dpp?: number
+          penyewaan_ppn?: number
+          pengadaan_dpp?: number
+          pengadaan_ppn?: number
+          pembelian_dpp?: number
+          pembelian_ppn?: number
+          ppn_keluaran?: number
+          ppn_masukan?: number
+          kurang_bayar?: number
+          status_lapor?: string | null
+          ntpn?: string | null
+          tgl_bayar?: string | null
+          tgl_lapor?: string | null
+        }
+        Update: {
+          user_id?: string
+          masa?: string
+          tanggal?: string
+          penyewaan_dpp?: number
+          penyewaan_ppn?: number
+          pengadaan_dpp?: number
+          pengadaan_ppn?: number
+          pembelian_dpp?: number
+          pembelian_ppn?: number
+          ppn_keluaran?: number
+          ppn_masukan?: number
+          kurang_bayar?: number
+          status_lapor?: string | null
+          ntpn?: string | null
+          tgl_bayar?: string | null
+          tgl_lapor?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "kontrol_ppn_user_id_fkey",
+            columns: ["user_id"],
+            referencedRelation: "users",
+            referencedColumns: ["id"]
+          }
+        ]
       }
     }
     Views: {

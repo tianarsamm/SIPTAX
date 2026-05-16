@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, usePathname } from 'next/navigation'
-import { LayoutDashboard, Building2, TrendingUp, FileBarChart2, FileBadge2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
+import { LayoutDashboard, Building2, TrendingUp, ShoppingCart, Plus, History, FileBarChart2, FileBadge2, ChevronLeft, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
 import { useState } from 'react'
 
 export default function Sidebar() {
@@ -9,9 +9,13 @@ export default function Sidebar() {
   const pathname = usePathname()
   const [collapsed, setCollapsed] = useState(false)
   const [manualPpnExpanded, setManualPpnExpanded] = useState<boolean | null>(null)
+  const [manualPembelianExpanded, setManualPembelianExpanded] = useState<boolean | null>(null)
 
   const isPpnPath = pathname.startsWith('/dashboard/arsipppn') || pathname.startsWith('/dashboard/kontrolppn')
   const ppnExpanded = manualPpnExpanded !== null ? manualPpnExpanded : isPpnPath
+
+  const isPembelianPath = pathname.startsWith('/dashboard/pembelian')
+  const pembelianExpanded = manualPembelianExpanded !== null ? manualPembelianExpanded : isPembelianPath
 
   // PPN submenus
   const ppnSubItems = [
@@ -19,11 +23,16 @@ export default function Sidebar() {
     { label: 'Kontrol PPN', icon: FileBarChart2, path: '/dashboard/kontrolppn' },
   ]
 
+  const pembelianSubItems = [
+    { label: 'Input Pembelian', icon: Plus, path: '/dashboard/pembelian' },
+    { label: 'Riwayat Pembelian', icon: History, path: '/dashboard/pembelian/riwayat' },
+  ]
+
   const navItems = [
     { label: 'Dashboard',     icon: LayoutDashboard, path: '/dashboard' },
     { label: 'Transaksi',     icon: Building2,       path: '/dashboard/cekppn' },
     { label: 'Penjualan',     icon: TrendingUp,      path: '/dashboard/penjualan' },
-    { label: 'Kontrol PPh',icon: FileBarChart2,   path: '/dashboard/kontrolpph' },
+    { label: 'Kontrol PPh',   icon: FileBarChart2,   path: '/dashboard/kontrolpph' },
   ]
 
   const toggle = () => {
@@ -197,6 +206,53 @@ export default function Sidebar() {
                 <span className="nav-label" style={{ opacity: collapsed ? 0 : 1 }}>
                   {item.label}
                 </span>
+              </div>
+            )
+          })}
+
+          {collapsed && (
+            <div
+              className={`nav-item ${isPembelianPath ? 'active' : ''}`}
+              onClick={() => router.push('/dashboard/pembelian')}
+              title="Pembelian"
+            >
+              <ShoppingCart size={17} style={{ flexShrink: 0 }} />
+              <span className="nav-label" style={{ opacity: 0 }}>
+                Pembelian
+              </span>
+            </div>
+          )}
+
+          {/* Pembelian Parent Menu */}
+          {!collapsed && (
+            <div
+              className={`nav-parent ${isPembelianPath ? 'active' : ''}`}
+              onClick={() => setManualPembelianExpanded(!pembelianExpanded)}
+            >
+              <div className="nav-parent-left">
+                <ShoppingCart size={17} style={{ flexShrink: 0 }} />
+                <span className="nav-label">Pembelian</span>
+              </div>
+              {pembelianExpanded ? (
+                <ChevronUp size={14} className="nav-expand-icon" />
+              ) : (
+                <ChevronDown size={14} className="nav-expand-icon" />
+              )}
+            </div>
+          )}
+
+          {/* Pembelian Submenus */}
+          {pembelianExpanded && !collapsed && pembelianSubItems.map((subItem) => {
+            const isActive = pathname === subItem.path
+            const Icon = subItem.icon
+            return (
+              <div
+                key={subItem.path}
+                className={`nav-subitem ${isActive ? 'active' : ''}`}
+                onClick={() => router.push(subItem.path)}
+              >
+                <Icon size={15} style={{ flexShrink: 0 }} />
+                <span>{subItem.label}</span>
               </div>
             )
           })}

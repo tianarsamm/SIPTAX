@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { supabaseClient } from '@/lib/supabaseClient'
+import type { Session, AuthChangeEvent } from '@supabase/supabase-js'
 
 export interface ProfilData {
   namaWP: string
@@ -10,13 +11,12 @@ export interface ProfilData {
   alamat: string
   status: 'PKP' | 'Non PKP'
   periode: string
-  perusahaan_id?: string | null
 }
 
 export interface CurrentUser {
   id: string
   namaWP: string
-  kode_perusahaan: string   // ← tambah ini
+  kode_perusahaan: string
   profil: ProfilData
 }
 
@@ -25,7 +25,7 @@ interface AuthContextType {
   loading: boolean
   register: (profil: ProfilData, password: string) => Promise<{ success: boolean; error?: string }>
   login: (namaWP: string, password: string) => Promise<{ success: boolean; error?: string }>
-  logout: () => void
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -34,81 +34,121 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let timeoutId: number | null = null
-    try {
-      const storedUser = localStorage.getItem('siptax-user')
-      const parsedUser = storedUser ? (JSON.parse(storedUser) as CurrentUser) : null
-      timeoutId = window.setTimeout(() => {
-        if (parsedUser) setUser(parsedUser)
-        setLoading(false)
-      }, 0)
-    } catch {
-      localStorage.removeItem('siptax-user')
-      timeoutId = window.setTimeout(() => setLoading(false), 0)
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  const stableHash = (value: string) => {
+    let hash = 0
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash * 31 + value.charCodeAt(i)) | 0
     }
-    return () => { if (timeoutId !== null) clearTimeout(timeoutId) }
+    return Math.abs(hash).toString(36).slice(0, 8)
+  }
+
+  const makeAuthEmail = (namaWP: string) => {
+    const slug = namaWP
+      .trim()
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '.')
+      .replace(/\.{2,}/g, '.')
+      .replace(/^\.+|\.+$/g, '')
+
+    const base = slug || `user-${stableHash(namaWP || 'user')}`
+    return `${base}@siptax.app`
+  }
+
+  // ─── Fetch profil dari public.users ───────────────────────────────────────
+
+  const fetchProfil = async (authId: string): Promise<CurrentUser | null> => {
+    const { data, error } = await supabaseClient
+      .from('users')
+      .select('*')
+      .eq('auth_id', authId)
+      .maybeSingle()
+
+    if (error || !data) return null
+
+    return {
+      id: authId,
+      namaWP: data.nama_wajib_pajak ?? '',
+      kode_perusahaan: data.kode_perusahaan ?? '',
+      profil: {
+        namaWP: data.nama_wajib_pajak ?? '',
+        npwp: data.npwp ?? '',
+        bidangUsaha: data.bidang_usaha ?? '',
+        alamat: data.alamat ?? '',
+        status: data.status_pkp ? 'PKP' : 'Non PKP',
+        periode: '',
+      },
+    }
+  }
+
+  // ─── Session listener ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    supabaseClient.auth
+      .getSession()
+      .then(async ({ data: { session } }: { data: { session: Session | null } }) => {
+        if (session?.user) {
+          const profil = await fetchProfil(session.user.id)
+          setUser(profil)
+        }
+        setLoading(false)
+      })
+
+    const {
+      data: { subscription },
+    } = supabaseClient.auth.onAuthStateChange(
+      async (event: AuthChangeEvent, session: Session | null) => {
+        if (session?.user) {
+          const profil = await fetchProfil(session.user.id)
+          setUser(profil)
+        } else {
+          setUser(null)
+        }
+        setLoading(false)
+      }
+    )
+
+    return () => subscription.unsubscribe()
   }, [])
 
-  const register = async (profil: ProfilData, password: string): Promise<{ success: boolean; error?: string }> => {
+  // ─── Register ─────────────────────────────────────────────────────────────
+
+  const register = async (
+    profil: ProfilData,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      // 1. Cek nama WP duplikat
-      const { data: existing } = await supabaseClient
-        .from('users')
-        .select('nama_wajib_pajak')
-        .eq('nama_wajib_pajak', profil.namaWP)
-        .maybeSingle()
-
-      if (existing) {
-        return { success: false, error: 'Nama WP sudah terdaftar' }
+      let email = makeAuthEmail(profil.namaWP)
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        email = `user-${Math.abs(
+          Array.from(profil.namaWP || 'user').reduce(
+            (acc, char) => acc * 31 + char.charCodeAt(0),
+            0
+          )
+        ).toString(36)}@siptax.app`
       }
 
-      // 2. Generate kode_perusahaan otomatis
-      const { count } = await supabaseClient
-        .from('users')
-        .select('*', { count: 'exact', head: true })
-
-      const urutan = (count ?? 0) + 1
-      const kode_perusahaan = `CMP${String(urutan).padStart(3, '0')}`
-
-      // 3. Hash password
-      const hashedPassword = btoa(password)
-
-      // 4. Insert user baru dengan kode_perusahaan
-      const { data, error: insertError } = await supabaseClient
-        .from('users')
-        .insert([{
-          nama_wajib_pajak: profil.namaWP,
+      const response = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          namaWP: profil.namaWP,
           npwp: profil.npwp,
-          bidang_usaha: profil.bidangUsaha,
+          bidangUsaha: profil.bidangUsaha,
           alamat: profil.alamat,
-          status_pkp: profil.status === 'PKP',
-          password: hashedPassword,
-          kode_perusahaan,   // ← tambah ini
-        }])
-        .select()
-        .single()
+          status: profil.status,
+          password,
+          email,
+        }),
+      })
 
-      if (insertError || !data) {
-        return { success: false, error: insertError?.message || 'Gagal mendaftar' }
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Gagal mendaftar' }
       }
-
-      // 5. Simpan ke context + localStorage (termasuk kode_perusahaan)
-      const currentUser: CurrentUser = {
-        id: data.id,
-        namaWP: data.nama_wajib_pajak!,
-        kode_perusahaan: data.kode_perusahaan!,   // ← tambah ini
-        profil: {
-          namaWP: data.nama_wajib_pajak!,
-          npwp: data.npwp!,
-          bidangUsaha: data.bidang_usaha!,
-          alamat: data.alamat!,
-          status: data.status_pkp ? 'PKP' : 'Non PKP',
-          periode: '',
-        }
-      }
-      setUser(currentUser)
-      localStorage.setItem('siptax-user', JSON.stringify(currentUser))
 
       return { success: true }
     } catch {
@@ -116,39 +156,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const login = async (namaWP: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const { data, error: selectError } = await supabaseClient
-        .from('users')
-        .select('*')
-        .eq('nama_wajib_pajak', namaWP)
-        .maybeSingle()
+  // ─── Login ────────────────────────────────────────────────────────────────
 
-      if (selectError || !data) {
-        return { success: false, error: 'Nama WP tidak ditemukan' }
+  const login = async (
+    namaWP: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      // 1. Verifikasi nama WP via API route (service role, bypass RLS)
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ namaWP, password }),
+      })
+
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        return { success: false, error: result.error || 'Nama WP tidak ditemukan' }
       }
 
-      const hashedPassword = btoa(password)
-      if (data.password !== hashedPassword) {
+      // 2. Gunakan email dari DB jika tersimpan, fallback ke rekonstruksi
+      const email: string = result.email ?? makeAuthEmail(result.namaWP)
+
+      // 3. Sign in ke Supabase Auth
+      const { error: authError } = await supabaseClient.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (authError) {
         return { success: false, error: 'Nama WP atau password salah' }
       }
-
-      // Sertakan kode_perusahaan saat login
-      const currentUser: CurrentUser = {
-        id: data.id,
-        namaWP: data.nama_wajib_pajak!,
-        kode_perusahaan: data.kode_perusahaan ?? '',   // ← tambah ini
-        profil: {
-          namaWP: data.nama_wajib_pajak!,
-          npwp: data.npwp!,
-          bidangUsaha: data.bidang_usaha!,
-          alamat: data.alamat!,
-          status: data.status_pkp ? 'PKP' : 'Non PKP',
-          periode: '',
-        }
-      }
-      setUser(currentUser)
-      localStorage.setItem('siptax-user', JSON.stringify(currentUser))
 
       return { success: true }
     } catch {
@@ -156,9 +194,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const logout = () => {
+  // ─── Logout ───────────────────────────────────────────────────────────────
+
+  const logout = async () => {
+    await supabaseClient.auth.signOut()
     setUser(null)
-    localStorage.removeItem('siptax-user')
   }
 
   return (

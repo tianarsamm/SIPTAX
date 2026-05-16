@@ -153,14 +153,23 @@ export default function PenjualanPage() {
   const totalDPP   = filtered.reduce((s, r) => s + (r.total_nilai_transaksi || r.total_jasa + r.total_barang), 0)
   const totalPPN   = filtered.reduce((s, r) => { const dpp = r.total_nilai_transaksi || r.total_jasa + r.total_barang; return s + (r.has_ppn ? Math.round(dpp * 0.12) : 0) }, 0)
   const totalPPh23 = filtered.reduce((s, r) => s + (r.has_bupot ? Math.round(r.total_jasa * 0.02) : 0), 0)
-  const totalKas   = totalDPP + totalPPN - totalPPh23
+  // Total kas diterima: hitung per-row dengan pengecualian untuk Bendahara Pemerintah
+  const totalKas = filtered.reduce((sum, r) => {
+    const dpp = r.total_nilai_transaksi || r.total_jasa + r.total_barang
+    const ppn = r.has_ppn ? Math.round(dpp * 0.12) : 0
+    const pph23 = r.has_bupot ? Math.round(r.total_jasa * 0.02) : 0
+    const isBendahara = r.jenis_wp === 'bendahara_pemerintah'
+    const kas = isBendahara ? dpp - pph23 : dpp + ppn - pph23
+    return sum + kas
+  }, 0)
 
   const handlePrint = (row: TransaksiRow) => {
     const nomorFaktur = row.nomor_transaksi || '-'
     const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
     const ppn = row.has_ppn ? Math.round(dpp * 0.12) : 0
     const bupot = row.has_bupot ? Math.round(row.total_jasa * 0.02) : 0
-    const kasDiterima = dpp + ppn - bupot
+    const isBendahara = row.jenis_wp === 'bendahara_pemerintah'
+    const kasDiterima = isBendahara ? dpp - bupot : dpp + ppn - bupot
 
     const jasaRowsHTML = (row.jasa_rows?.filter(r => r.nama?.trim()) ?? []).length === 0
       ? `<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:0.5rem;">Tidak ada jasa</td></tr>`
@@ -239,6 +248,7 @@ export default function PenjualanPage() {
           <div class="summary-row"><span>Sub Total</span><strong>Rp ${fmt(dpp)}</strong></div>
           ${row.has_ppn ? `<div class="summary-row green"><span>PPN / VAT (12%)</span><strong>Rp ${fmt(ppn)}</strong></div>` : ''}
           ${row.has_bupot ? `<div class="summary-row orange"><span>PPh 23 / Income Tax 23 (2%)</span><strong>- Rp ${fmt(bupot)}</strong></div>` : ''}
+          ${isBendahara ? `<div class="summary-row" style="font-size:0.85rem;color:#64748b;margin-top:0.25rem;"><span>Catatan</span><strong>PPN tetap ditampilkan tetapi tidak termasuk dalam total untuk Bendahara Pemerintah</strong></div>` : ''}
           <div class="summary-divider"></div>
           <div class="summary-row total"><span>Total Tagihan / Current Charges</span><strong>Rp ${fmt(kasDiterima)}</strong></div>
         </div>
@@ -558,7 +568,8 @@ export default function PenjualanPage() {
                         const dpp   = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
                         const ppn   = row.has_ppn   ? Math.round(dpp * 0.12) : 0
                         const pph23 = row.has_bupot ? Math.round(row.total_jasa * 0.02) : 0
-                        const kas   = dpp + ppn - pph23
+                        const isBendaharaRow = row.jenis_wp === 'bendahara_pemerintah'
+                        const kas   = isBendaharaRow ? dpp - pph23 : dpp + ppn - pph23
                         return (
                           <tr key={row.id}>
                             <td className="muted">{startIndex + i + 1}</td>

@@ -1,631 +1,807 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { Search, SlidersHorizontal, ChevronDown, Download, X } from 'lucide-react'
+
+import Sidebar from '@/components/Sidebar'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
-import { ChevronRight, Search, SlidersHorizontal, X, ChevronDown, Download } from 'lucide-react'
-import Sidebar from '@/components/Sidebar'
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface PPNRow {
+  id: string
+  masa: string
+  tanggal: string
+  penyerahan_lainnya_nilai_bruto: number
+  penyerahan_lainnya_ppn_terutang: number
+  penyerahan_pemungut_nilai_bruto: number
+  penyerahan_pemungut_ppn_terutang: number
+  total_penghasilan: number
+  total_sd_bulan_ini: number
+  total_ppn_terutang: number
+  pmb_dpp_nilai_lain_nilai_bruto: number
+  pmb_dpp_nilai_lain_ppn_terutang: number
+  pmb_skp_luar_negeri_nilai_bruto: number
+  pmb_skp_luar_negeri_ppn_terutang: number
+  total_pmb_penghasilan: number
+  total_pmb_sd_bulan_ini: number
+  total_pmb_ppn_terutang: number
+  kompensasi_kelebihan_pm: number
+  total_ppn_terutang_final: number
+  ppn_kurang_lebih_bayar_spt: number
+  ppn_diperhitungkan: number
+  ppn_kurang_bayar: number
+  ntpn_surat_ket_pbk: string
+  tgl_bayar?: string
+  tgl_lapor?: string
+  tgl_pengembalian?: string
+  status_lapor?: string
+}
 
 interface TransaksiRow {
   id: string
-  nomor_transaksi: string
+  masa: string | null
   tanggal: string
-  masa: string
-  pembeli: string
-  npwp_pembeli: string
-  jenis_wp: string
-  penjual: string
-  npwp_penjual: string
-  kode_jasa: string
-  jenis_jasa: string
-  total_jasa: number
-  total_barang: number
-  total_dpp: number
-  total_nilai_transaksi: number
-  has_ppn: boolean
-  has_bupot: boolean
-  status_bupot?: string
-  jasa_rows: { nama: string; harga: string }[]
-  barang_rows: { nama: string; harga: string }[]
+  jenis_wp: string | null
+  total_nilai_transaksi: number | null
+  has_ppn: boolean | null
 }
 
-const MASA_OPTIONS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December',
+interface PembelianPPNRow {
+  id: string
+  masa: string | null
+  tanggal_faktur: string | null
+  dpp: number
+  ppn: number
+  keterangan: string | null
+}
+
+interface PembelianRow {
+  masa: string
+  nb_normal: number
+  ppn_normal: number
+  nb_lainnya: number
+  ppn_lainnya: number
+  penghasilan: number
+  sd_bulan_ini: number
+  total_ppn: number
+}
+
+interface PenjualanRow {
+  masa: string
+  nb_badan: number
+  ppn_badan: number
+  nb_bendahara: number
+  ppn_bendahara: number
+  penghasilan: number
+  sd_bulan_ini: number
+  total_ppn: number
+}
+
+interface PerhitunganFormState {
+  kompensasi: string
+  ppn_kurang_lebih: string
+  ppn_dibayarkan: string
+  ntpn: string
+  tgl_bayar: string
+  tgl_lapor: string
+  tgl_pengembalian: string
+}
+
+type TabKey = 'penjualan' | 'pembelian' | 'perhitungan'
+
+const MASA_ORDER = [
+  'Januari','Februari','Maret','April','Mei','Juni',
+  'Juli','Agustus','September','Oktober','November','Desember',
 ]
 
-const STATUS_BUPOT_OPTIONS = [
-  { value: 'terbit',       label: 'Terbit' },
-  { value: 'tidak_terbit', label: 'Tidak Terbit' },
-  { value: 'proses',       label: 'Proses' },
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'penjualan',   label: 'Penjualan' },
+  { key: 'pembelian',   label: 'Pembelian' },
+  { key: 'perhitungan', label: 'Perhitungan Akhir' },
 ]
 
-export default function KontrolPPhPage() {
-  const router = useRouter()
-  const { user, loading: authLoading } = useAuth()
-  const [data, setData]       = useState<TransaksiRow[]>([])
-  const [loading, setLoading] = useState(true)
-  const [filterOpen, setFilterOpen] = useState(false)
-  const [itemsPerPage, setItemsPerPage] = useState(10)
-  const [currentPage, setCurrentPage]   = useState(1)
+const isBendahara = (jenis_wp: string | null): boolean => {
+  if (!jenis_wp) return false
+  return jenis_wp.toLowerCase().includes('bendahara')
+}
 
-  // ── Status update state ──
-  const [updatingId, setUpdatingId] = useState<string | null>(null)
-  const [updateError, setUpdateError] = useState<string | null>(null)
+const PPN_RATE = 0.11
 
-  // ── Filter state ──
-  const [search, setSearch]             = useState('')
-  const [filterMasa, setFilterMasa]     = useState('')
-  const [filterTahun, setFilterTahun]   = useState('')
-  const [filterStatus, setFilterStatus] = useState('')
-  const [filterMinDPP, setFilterMinDPP] = useState('')
-  const [filterMaxDPP, setFilterMaxDPP] = useState('')
+export default function KontrolPPNPage() {
+  const { user } = useAuth()
 
-  const hasActiveFilter = search || filterMasa || filterTahun || filterStatus || filterMinDPP || filterMaxDPP
+  const [data, setData]             = useState<PPNRow[]>([])
+  const [loadingPPN, setLoadingPPN] = useState(true)
+  const [transaksi, setTransaksi]   = useState<TransaksiRow[]>([])
+  const [loadingTrx, setLoadingTrx] = useState(true)
+  const [pembelian, setPembelian]   = useState<PembelianPPNRow[]>([])
+  const [loadingPmb, setLoadingPmb] = useState(true)
 
-  const clearFilters = () => {
-    setSearch(''); setFilterMasa(''); setFilterTahun('')
-    setFilterStatus(''); setFilterMinDPP(''); setFilterMaxDPP('')
+  const [activeTab, setActiveTab]     = useState<TabKey>('penjualan')
+  const [search, setSearch]           = useState('')
+  const [filterMasa, setFilterMasa]   = useState('')
+  const [filterOpen, setFilterOpen]   = useState(false)
+
+  const [perhitunganForm, setPerhitunganForm] = useState<PerhitunganFormState>({
+    kompensasi: '0',
+    ppn_kurang_lebih: '0',
+    ppn_dibayarkan: '0',
+    ntpn: '',
+    tgl_bayar: '',
+    tgl_lapor: '',
+    tgl_pengembalian: '',
+  })
+
+  const parseNumber = (value: string) => {
+    if (!value) return 0
+    const cleaned = value.replace(/Rp\.\s?/g, '').replace(/\./g, '').replace(/,/g, '')
+    return Number(cleaned) || 0
   }
 
-  // Reset ke halaman 1 saat filter berubah
-  useEffect(() => {
-    setCurrentPage(1)
-  }, [search, filterMasa, filterTahun, filterStatus, filterMinDPP, filterMaxDPP])
+  const formatCurrency = (value: string | number): string => {
+    const num = typeof value === 'string' ? parseNumber(value) : value
+    if (isNaN(num)) return 'Rp.0'
+    if (num === 0) return ''
+    return 'Rp.' + Math.floor(num).toLocaleString('id-ID')
+  }
 
-  useEffect(() => {
-    if (authLoading) return
-    if (!user?.id) { router.push('/login'); return }
+  const handleCurrencyInput = (e: React.ChangeEvent<HTMLInputElement>, field: keyof PerhitunganFormState) => {
+    const input = e.target.value
+    const cleanedNum = parseNumber(input)
+    setPerhitunganForm(prev => ({ ...prev, [field]: cleanedNum.toString() }))
+  }
 
+  const handleCurrencyBlur = (e: React.FocusEvent<HTMLInputElement>, field: keyof PerhitunganFormState) => {
+    const num = parseNumber(e.target.value)
+    setPerhitunganForm(prev => ({ ...prev, [field]: num.toString() }))
+  }
+
+  // ── Fetch kontrol_ppn ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
     const fetchData = async () => {
-      setLoading(true)
-      const { data: rows } = await supabaseClient
-        .from('transaksi')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('has_bupot', true)
-        .order('tanggal', { ascending: false })
-      setData(rows ?? [])
-      setLoading(false)
+      setLoadingPPN(true)
+      try {
+        const { data: rows, error } = await supabaseClient
+          .from('kontrol_ppn')
+          .select('*')
+          .order('tanggal', { ascending: true })
+        if (error) { console.error(error); setData([]) }
+        else setData(rows || [])
+      } catch (e) { console.error(e); setData([]) }
+      finally { setLoadingPPN(false) }
     }
     fetchData()
-  }, [user?.id, authLoading, router])
+  }, [user?.id])
 
-  // ── Update status bupot ──
-  const handleStatusChange = async (id: string, newStatus: string) => {
-    setUpdatingId(id)
-    setUpdateError(null)
-
-    const { error } = await supabaseClient
-      .from('transaksi')
-      .update({ status_bupot: newStatus })
-      .eq('id', id)
-
-    if (error) {
-      setUpdateError(`Gagal menyimpan status: ${error.message}`)
-    } else {
-      setData(prev =>
-        prev.map(r => r.id === id ? { ...r, status_bupot: newStatus } : r)
-      )
+  // ── Fetch transaksi ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    const fetchTrx = async () => {
+      setLoadingTrx(true)
+      try {
+        const { data: rows, error } = await supabaseClient
+          .from('transaksi')
+          .select('id, masa, tanggal, jenis_wp, total_nilai_transaksi, has_ppn')
+          .order('tanggal', { ascending: true })
+        if (error) { console.error(error); setTransaksi([]) }
+        else setTransaksi(rows || [])
+      } catch (e) { console.error(e); setTransaksi([]) }
+      finally { setLoadingTrx(false) }
     }
-    setUpdatingId(null)
-  }
+    fetchTrx()
+  }, [user?.id])
 
-  // ── Derived: unique tahun list ──
-  const tahunList = useMemo(() => {
-    const set = new Set(
-      data.map(r => r.tanggal ? new Date(r.tanggal).getFullYear().toString() : '').filter(Boolean)
-    )
-    return Array.from(set).sort((a, b) => Number(b) - Number(a))
-  }, [data])
+  // ── Fetch pembelian_ppn ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    const fetchPmb = async () => {
+      setLoadingPmb(true)
+      try {
+        const { data: rows, error } = await supabaseClient
+          .from('pembelian_ppn')
+          .select('id, masa, tanggal_faktur, dpp, ppn, keterangan')
+          .order('tanggal_faktur', { ascending: true })
+        if (error) { console.error('pembelian_ppn error:', error); setPembelian([]) }
+        else {
+          const normalized = (rows || []).map((r: Record<string, unknown>) => ({
+            ...r,
+            dpp: typeof r.dpp === 'string' ? parseFloat(r.dpp as string) || 0 : (r.dpp as number) ?? 0,
+            ppn: typeof r.ppn === 'string' ? parseFloat(r.ppn as string) || 0 : (r.ppn as number) ?? 0,
+            keterangan: (r.keterangan as string) ?? 'Normal',
+          })) as PembelianPPNRow[]
+          setPembelian(normalized)
+        }
+      } catch (e) { console.error(e); setPembelian([]) }
+      finally { setLoadingPmb(false) }
+    }
+    fetchPmb()
+  }, [user?.id])
 
-  // ── Filtered data ──
-  const filtered = useMemo(() => {
-    return data.filter(row => {
-      const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
-      if (search) {
-        const q = search.toLowerCase()
-        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, row.masa, row.kode_jasa, row.jenis_jasa]
-          .some(v => v?.toLowerCase().includes(q))
-        if (!match) return false
+  // ── Aggregate: penjualan ─────────────────────────────────────────────────
+  const penjualanRows = useMemo((): PenjualanRow[] => {
+    const map: Record<string, { nb_badan: number; ppn_badan: number; nb_bendahara: number; ppn_bendahara: number }> = {}
+    for (const t of transaksi) {
+      const masa = t.masa ?? 'Tidak Diketahui'
+      if (!map[masa]) map[masa] = { nb_badan: 0, ppn_badan: 0, nb_bendahara: 0, ppn_bendahara: 0 }
+      const nb  = t.total_nilai_transaksi ?? 0
+      const ppn = t.has_ppn ? nb * PPN_RATE : 0
+      if (isBendahara(t.jenis_wp)) {
+        map[masa].nb_bendahara  += nb
+        map[masa].ppn_bendahara += ppn
+      } else {
+        map[masa].nb_badan  += nb
+        map[masa].ppn_badan += ppn
       }
-      if (filterMasa && row.masa !== filterMasa) return false
-      if (filterTahun && row.tanggal) {
-        if (new Date(row.tanggal).getFullYear().toString() !== filterTahun) return false
-      }
-      if (filterStatus && (row.status_bupot ?? 'tidak_terbit') !== filterStatus) return false
-      if (filterMinDPP && dpp < Number(filterMinDPP.replace(/\D/g, ''))) return false
-      if (filterMaxDPP && dpp > Number(filterMaxDPP.replace(/\D/g, ''))) return false
-      return true
+    }
+    const rows: PenjualanRow[] = MASA_ORDER.filter(m => map[m]).map(m => {
+      const g = map[m]
+      const penghasilan = g.nb_badan + g.nb_bendahara
+      const total_ppn   = g.ppn_badan + g.ppn_bendahara
+      return { masa: m, ...g, penghasilan, sd_bulan_ini: 0, total_ppn }
     })
-  }, [data, search, filterMasa, filterTahun, filterStatus, filterMinDPP, filterMaxDPP])
-
-  const fmt = (n: number) => n.toLocaleString('id-ID')
-
-  // ── Pagination ──
-  const totalPages    = Math.ceil(filtered.length / itemsPerPage)
-  const startIndex    = (currentPage - 1) * itemsPerPage
-  const endIndex      = Math.min(startIndex + itemsPerPage, filtered.length)
-  const displayedData = filtered.slice(startIndex, endIndex)
-
-  const buildPageList = (): (number | '...')[] => {
-    const pages: (number | '...')[] = []
-    if (totalPages <= 5) {
-      for (let i = 1; i <= totalPages; i++) pages.push(i)
-    } else {
-      pages.push(1)
-      if (currentPage > 3) pages.push('...')
-      for (let i = Math.max(2, currentPage - 1); i <= Math.min(totalPages - 1, currentPage + 1); i++) {
-        pages.push(i)
+    for (const m of Object.keys(map)) {
+      if (!MASA_ORDER.includes(m)) {
+        const g = map[m]
+        rows.push({ masa: m, ...g, penghasilan: g.nb_badan + g.nb_bendahara, sd_bulan_ini: 0, total_ppn: g.ppn_badan + g.ppn_bendahara })
       }
-      if (currentPage < totalPages - 2) pages.push('...')
-      pages.push(totalPages)
     }
-    return pages
-  }
+    let cum = 0
+    for (const r of rows) { cum += r.penghasilan; r.sd_bulan_ini = cum }
+    return rows
+  }, [transaksi])
 
-  const displayName   = user?.namaWP || 'User'
-  const displayRole   = user?.profil?.bidangUsaha || 'Wajib Pajak'
-  const displayAvatar = user?.namaWP?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) || 'U'
+  // ── Aggregate: pembelian ─────────────────────────────────────────────────
+  const pembelianRows = useMemo((): PembelianRow[] => {
+    const map: Record<string, { nb_normal: number; ppn_normal: number; nb_lainnya: number; ppn_lainnya: number }> = {}
+    for (const p of pembelian) {
+      const masa = p.masa ?? 'Tidak Diketahui'
+      if (!map[masa]) map[masa] = { nb_normal: 0, ppn_normal: 0, nb_lainnya: 0, ppn_lainnya: 0 }
+      const isNormal = !p.keterangan || p.keterangan.toLowerCase() === 'normal'
+      if (isNormal) {
+        map[masa].nb_normal  += p.dpp ?? 0
+        map[masa].ppn_normal += p.ppn ?? 0
+      } else {
+        map[masa].nb_lainnya  += p.dpp ?? 0
+        map[masa].ppn_lainnya += p.ppn ?? 0
+      }
+    }
+    const rows: PembelianRow[] = MASA_ORDER.filter(m => map[m]).map(m => {
+      const g = map[m]
+      const penghasilan = g.nb_normal + g.nb_lainnya
+      const total_ppn   = g.ppn_normal + g.ppn_lainnya
+      return { masa: m, ...g, penghasilan, sd_bulan_ini: 0, total_ppn }
+    })
+    for (const m of Object.keys(map)) {
+      if (!MASA_ORDER.includes(m)) {
+        const g = map[m]
+        rows.push({ masa: m, ...g, penghasilan: g.nb_normal + g.nb_lainnya, sd_bulan_ini: 0, total_ppn: g.ppn_normal + g.ppn_lainnya })
+      }
+    }
+    let cum = 0
+    for (const r of rows) { cum += r.penghasilan; r.sd_bulan_ini = cum }
+    return rows
+  }, [pembelian])
 
-  // ── Summary totals (filtered) ──
-  const totalDPP   = filtered.reduce((s, r) => s + (r.total_nilai_transaksi || r.total_jasa + r.total_barang), 0)
-  const totalPPh23 = filtered.reduce((s, r) => s + Math.round(r.total_jasa * 0.02), 0)
+  // ── Filters ──────────────────────────────────────────────────────────────
+  const filteredPembelian = useMemo(() => pembelianRows.filter(r => {
+    if (filterMasa && r.masa !== filterMasa) return false
+    if (search && !r.masa.toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  }), [pembelianRows, filterMasa, search])
+
+  const filteredPenjualan = useMemo(() => penjualanRows.filter(r => {
+    if (filterMasa && r.masa !== filterMasa) return false
+    if (search && !r.masa.toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  }), [penjualanRows, filterMasa, search])
+
+  const filtered = useMemo(() => data.filter(row => {
+    if (search) {
+      const q = search.toLowerCase()
+      const hit = [row.masa, row.ntpn_surat_ket_pbk, row.status_lapor]
+        .filter(Boolean).some(v => v?.toLowerCase().includes(q))
+      if (!hit) return false
+    }
+    if (filterMasa && row.masa !== filterMasa) return false
+    return true
+  }), [data, search, filterMasa])
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const fmt = (n: number) => Number(n || 0).toLocaleString('id-ID')
+  const sumPPN  = (key: keyof PPNRow) => filtered.reduce((s, r) => s + ((r[key] as number) || 0), 0)
+  const sumPenj = (key: keyof PenjualanRow) => filteredPenjualan.reduce((s, r) => s + ((r[key] as number) || 0), 0)
+  const sumPmb  = (key: keyof PembelianRow) => filteredPembelian.reduce((s, r) => s + ((r[key] as number) || 0), 0)
+
+  const totalPenyerahan     = sumPenj('penghasilan')
+  const totalPPN            = sumPenj('total_ppn')
+  const totalPM             = sumPmb('total_ppn')
+  const totalKurangBayar    = sumPPN('ppn_kurang_bayar')
+  const totalPPNTerutang    = totalPPN - totalPM - parseNumber(perhitunganForm.kompensasi)
+  const ppnKurangBayarFinal = totalPPNTerutang - parseNumber(perhitunganForm.ppn_kurang_lebih) - parseNumber(perhitunganForm.ppn_dibayarkan)
 
   const handleExportCSV = () => {
-    const headers = ['No','Tanggal','Masa','Invoice','Nama Pemotong','NPWP','Kode Jasa','Jenis Jasa','DPP','Tarif','Pajak PPh23','Status Bupot']
-    const rows = filtered.map((row, i) => {
-      const dpp   = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
-      const pajak = Math.round(row.total_jasa * 0.02)
-      const status = row.status_bupot === 'terbit' ? 'Terbit' : row.status_bupot === 'proses' ? 'Proses' : 'Tidak Terbit'
-      return [i+1, row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-', row.masa || '-', row.nomor_transaksi || '-', row.pembeli || '-', row.npwp_pembeli || '-', row.kode_jasa || '-', row.jenis_jasa || '-', dpp, '2%', pajak, status].join(',')
-    })
-    const csv = [headers.join(','), ...rows].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href = url; a.download = 'kontrol_pph23.csv'; a.click()
-    URL.revokeObjectURL(url)
+    const rows = filtered.map(r => [
+      r.masa,
+      r.penyerahan_lainnya_nilai_bruto, r.penyerahan_lainnya_ppn_terutang,
+      r.penyerahan_pemungut_nilai_bruto, r.penyerahan_pemungut_ppn_terutang,
+      r.total_penghasilan, r.total_sd_bulan_ini, r.total_ppn_terutang,
+      r.pmb_dpp_nilai_lain_nilai_bruto, r.pmb_dpp_nilai_lain_ppn_terutang,
+      r.pmb_skp_luar_negeri_nilai_bruto, r.pmb_skp_luar_negeri_ppn_terutang,
+      r.total_pmb_penghasilan, r.total_pmb_sd_bulan_ini, r.total_pmb_ppn_terutang,
+      r.kompensasi_kelebihan_pm, r.total_ppn_terutang_final,
+      r.ppn_kurang_lebih_bayar_spt, r.ppn_diperhitungkan, r.ppn_kurang_bayar,
+      r.ntpn_surat_ket_pbk || '-', r.tgl_bayar || '-', r.tgl_lapor || '-', r.tgl_pengembalian || '-',
+    ].join(','))
+    const header = 'Masa,Penyerahan Lainnya NB,PPN Terutang,Pemungut NB,PPN Terutang,Total Penghasilan,s.d Bulan Ini,Total PPN,PMB DPP NB,PPN Terutang,SKP LN NB,PPN Terutang,Total PMB,PMB sd Bulan,PMB PPN,Kompensasi,Total PPN Final,Kurang Lebih SPT,Diperhitungkan,Kurang Bayar,NTPN,Tgl Bayar,Tgl Lapor,Tgl Pengembalian'
+    const csv = [header, ...rows].join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    a.download = 'kontrol_ppn.csv'
+    a.click()
   }
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <>
       <style>{`
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Segoe UI', sans-serif; background: #f1f5f9; }
+        * { box-sizing: border-box; }
+        body { background: #f1f5f9; font-family: 'Segoe UI', sans-serif; }
         .layout { display: flex; min-height: 100vh; }
-
-        /* ── Topbar ── */
-        .topbar { position: fixed; top: 0; left: 220px; right: 0; height: 64px; background: #fff; border-bottom: 1px solid #e8ecf0; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; z-index: 10; }
-        .topbar-left { font-size: 1.35rem; font-weight: 700; color: #1e293b; }
-        .topbar-right { display: flex; align-items: center; gap: 0.75rem; }
-        .user-info-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.45rem 0.75rem; border-radius: 12px; cursor: pointer; border: none; background: transparent; transition: background 0.15s; text-align: right; }
-        .user-info-btn:hover { background: #f1f5f9; }
-        .user-info { text-align: right; }
-        .user-name { font-size: 0.875rem; font-weight: 600; color: #1e293b; display: block; }
-        .user-role { font-size: 0.75rem; color: #94a3b8; display: block; }
-        .avatar { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(135deg, #3b82f6, #6366f1); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 0.85rem; font-weight: 700; flex-shrink: 0; }
-        .chevron-hint { color: #cbd5e1; flex-shrink: 0; }
-        .btn-export { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.48rem 1rem; border-radius: 9px; border: 1.5px solid #e2e8f0; background: #fff; font-size: 0.8rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-        .btn-export:hover { border-color: #3b82f6; color: #3b82f6; }
-
-        .main { margin-left: 220px; padding-top: 64px; min-height: 100vh; }
-        .main-content { padding: 1.75rem; }
-
-        /* ── Error Toast ── */
-        .error-toast { background: #fee2e2; border: 1.5px solid #fca5a5; border-radius: 10px; padding: 0.65rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between; font-size: 0.82rem; color: #dc2626; font-weight: 600; }
-        .error-toast button { background: none; border: none; cursor: pointer; color: #dc2626; display: flex; align-items: center; }
-
-        /* ── Summary Cards ── */
-        .summary-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-        .summary-card { background: #fff; border-radius: 12px; padding: 1.1rem 1.25rem; border: 1.5px solid #e2e8f0; }
-        .summary-card .card-label { font-size: 0.68rem; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.35rem; }
-        .summary-card .card-value { font-size: 1.25rem; font-weight: 800; color: #1e293b; }
-        .summary-card .card-value.orange { color: #d97706; }
-        .summary-card .card-value.blue   { color: #2563eb; }
-
-        /* ── Toolbar ── */
-        .toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
-        .search-box { display: flex; align-items: center; gap: 0.5rem; background: #fff; border: 1.5px solid #e2e8f0; border-radius: 9px; padding: 0.5rem 0.85rem; flex: 1; min-width: 200px; max-width: 340px; transition: border-color 0.15s; }
-        .search-box:focus-within { border-color: #3b82f6; }
-        .search-box input { border: none; outline: none; background: transparent; font-size: 0.84rem; color: #1e293b; width: 100%; }
-        .search-box input::placeholder { color: #94a3b8; }
-        .btn-filter { display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.52rem 1rem; border-radius: 9px; border: 1.5px solid #e2e8f0; background: #fff; font-size: 0.82rem; font-weight: 600; color: #475569; cursor: pointer; transition: all 0.15s; white-space: nowrap; position: relative; }
-        .btn-filter:hover { border-color: #3b82f6; color: #3b82f6; }
-        .btn-filter.active { border-color: #3b82f6; background: #eff6ff; color: #2563eb; }
-        .filter-badge { position: absolute; top: -6px; right: -6px; width: 17px; height: 17px; border-radius: 50%; background: #ef4444; color: #fff; font-size: 0.65rem; font-weight: 800; display: flex; align-items: center; justify-content: center; }
-        .btn-clear { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.52rem 0.9rem; border-radius: 9px; border: 1.5px solid #fecaca; background: #fff5f5; font-size: 0.8rem; font-weight: 600; color: #ef4444; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
-        .btn-clear:hover { background: #fee2e2; }
-        .result-count { font-size: 0.78rem; color: #94a3b8; margin-left: auto; }
-        .result-count strong { color: #1e293b; }
-
-        /* ── Filter Panel ── */
-        .filter-panel { background: #fff; border: 1.5px solid #e2e8f0; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 1rem 1.25rem; animation: slideDown 0.18s ease; }
-        @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
-        .filter-group label { display: block; font-size: 0.68rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
-        .filter-group select, .filter-group input[type="text"] { width: 100%; padding: 0.45rem 0.7rem; border: 1.5px solid #e2e8f0; border-radius: 7px; font-size: 0.82rem; color: #1e293b; background: #fff; outline: none; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; }
-        .filter-group select:focus, .filter-group input[type="text"]:focus { border-color: #3b82f6; }
-        .select-wrap { position: relative; }
-        .select-wrap svg { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); pointer-events: none; color: #94a3b8; }
-        .filter-range { display: flex; align-items: center; gap: 0.4rem; }
-        .filter-range input { flex: 1; }
-        .filter-range span { font-size: 0.75rem; color: #94a3b8; flex-shrink: 0; }
-        .filter-panel-footer { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 0.6rem; padding-top: 0.75rem; border-top: 1px solid #f1f5f9; }
-        .btn-apply { padding: 0.5rem 1.25rem; border-radius: 8px; border: none; background: #2563eb; color: #fff; font-size: 0.82rem; font-weight: 700; cursor: pointer; transition: background 0.15s; }
-        .btn-apply:hover { background: #1d4ed8; }
-
-        /* ── Active Filter Tags ── */
-        .filter-tags { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
-        .filter-tag { display: inline-flex; align-items: center; gap: 0.3rem; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 999px; padding: 0.2rem 0.65rem 0.2rem 0.5rem; font-size: 0.72rem; font-weight: 600; color: #2563eb; }
-        .filter-tag button { background: none; border: none; cursor: pointer; color: #93c5fd; display: flex; align-items: center; padding: 0; line-height: 1; }
-        .filter-tag button:hover { color: #2563eb; }
-
-        /* ── Table ── */
-        .excel-wrap { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06); overflow: hidden; }
-        .excel-title-bar { background: #2563eb; padding: 0.85rem 1.5rem; display: flex; align-items: center; justify-content: space-between; }
-        .excel-title-bar h2 { color: #fff; font-size: 1rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-        .excel-title-bar span { font-size: 0.75rem; color: rgba(255,255,255,0.65); }
-        .table-wrap { overflow-x: auto; }
-        table.excel { width: 100%; border-collapse: collapse; font-size: 0.78rem; white-space: nowrap; }
-        table.excel thead tr { background: #1d4ed8; }
-        table.excel thead th { padding: 0.55rem 0.65rem; color: #fff; font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; border-right: 1px solid #2563eb; text-align: center; }
-        table.excel thead th.right { text-align: right; }
-        table.excel tbody tr:nth-child(odd)  { background: #dbeafe; }
-        table.excel tbody tr:nth-child(even) { background: #eff6ff; }
-        table.excel tbody tr:hover td { background: #bfdbfe; }
-        table.excel td { padding: 0.45rem 0.65rem; color: #1e293b; border-right: 1px solid #bfdbfe; border-bottom: 1px solid #bfdbfe; vertical-align: middle; text-align: center; }
-        table.excel td.left  { text-align: left; }
-        table.excel td.right { text-align: right; }
-        table.excel td.muted { color: #64748b; font-size: 0.72rem; }
-        table.excel td.mono  { font-family: 'Courier New', monospace; font-size: 0.72rem; font-weight: 700; }
-        table.excel td.bold  { font-weight: 700; }
-        table.excel tfoot tr { background: #1e3a5f; }
-        table.excel tfoot td { padding: 0.6rem 0.65rem; color: #fff; font-weight: 700; font-size: 0.78rem; border-right: 1px solid #2d4a6f; text-align: center; }
-        table.excel tfoot td.right { text-align: right; }
-        table.excel tfoot td.left  { text-align: left; }
-        .empty-state   { text-align: center; padding: 3rem 1rem; color: #94a3b8; font-size: 0.875rem; }
-        .loading-state { text-align: center; padding: 3rem 1rem; color: #94a3b8; font-size: 0.875rem; }
-        .no-results { text-align: center; padding: 2.5rem 1rem; color: #94a3b8; font-size: 0.84rem; }
-        .no-results strong { display: block; color: #475569; font-size: 0.9rem; margin-bottom: 0.3rem; }
-
-        /* ── Status Dropdown ── */
-        .status-cell { position: relative; display: inline-flex; align-items: center; gap: 0.35rem; }
-        .status-select { appearance: none; -webkit-appearance: none; border-radius: 999px; padding: 0.22rem 1.75rem 0.22rem 0.7rem; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; cursor: pointer; outline: none; transition: box-shadow 0.15s, opacity 0.15s; background-repeat: no-repeat; background-position: right 0.45rem center; background-size: 10px; border: 1.5px solid transparent; }
-        .status-select:hover:not(:disabled) { box-shadow: 0 0 0 2.5px rgba(59,130,246,0.35); }
-        .status-select:focus:not(:disabled) { box-shadow: 0 0 0 2.5px rgba(59,130,246,0.5); }
-        .status-select:disabled { opacity: 0.55; cursor: wait; }
-        .status-select.s-terbit { background-color: #dcfce7; color: #15803d; border-color: #86efac; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2315803d' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); }
-        .status-select.s-tidak_terbit { background-color: #fee2e2; color: #dc2626; border-color: #fca5a5; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23dc2626' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); }
-        .status-select.s-proses { background-color: #fef9c3; color: #a16207; border-color: #fde047; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23a16207' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); }
-        .status-spinner { width: 13px; height: 13px; border: 2px solid #e2e8f0; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.55s linear infinite; flex-shrink: 0; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        /* ── Pagination ── */
-        .pagination-bar { display: flex; align-items: center; justify-content: space-between; padding: 0.85rem 1.25rem; border-top: 1px solid #e2e8f0; flex-wrap: wrap; gap: 0.75rem; }
-        .pagination-info { font-size: 0.78rem; color: #64748b; }
-        .pagination-info strong { color: #1e293b; }
-        .pagination-controls { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-        .per-page-wrap { display: flex; align-items: center; gap: 0.5rem; }
-        .per-page-wrap span { font-size: 0.78rem; color: #64748b; white-space: nowrap; }
-        .per-page-select-wrap { position: relative; }
-        .per-page-select { appearance: none; -webkit-appearance: none; padding: 0.38rem 2rem 0.38rem 0.65rem; border-radius: 6px; border: 1.5px solid #e2e8f0; background: #fff; font-size: 0.8rem; font-weight: 600; color: #1e293b; cursor: pointer; outline: none; transition: border-color 0.15s; }
-        .per-page-select:focus { border-color: #3b82f6; }
-        .per-page-select-wrap svg { position: absolute; right: 0.45rem; top: 50%; transform: translateY(-50%); pointer-events: none; color: #94a3b8; }
-        .page-btns { display: flex; align-items: center; gap: 0.3rem; }
-        .page-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 6px; border: 1.5px solid #e2e8f0; background: #fff; color: #475569; font-weight: 700; font-size: 0.8rem; cursor: pointer; transition: all 0.15s; line-height: 1; }
-        .page-btn:hover:not(:disabled):not(.active) { border-color: #3b82f6; color: #2563eb; }
-        .page-btn.active { border: 2px solid #2563eb; background: #2563eb; color: #fff; }
-        .page-btn:disabled { color: #cbd5e1; cursor: not-allowed; }
-        .page-ellipsis { width: 32px; text-align: center; font-size: 0.8rem; color: #94a3b8; line-height: 32px; }
-
-        @media (max-width: 768px) {
-          .topbar { left: 0; }
-          .main { margin-left: 0; }
-          .pagination-bar { flex-direction: column; align-items: flex-start; }
+        .topbar {
+          position: fixed; top: 0; left: 220px; right: 0; height: 60px;
+          background: #fff; border-bottom: 1px solid #e2e8f0;
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0 1.75rem; z-index: 10;
         }
+        .main { margin-left: 220px; padding-top: 60px; width: 100%; }
+        .page { padding: 1.5rem; }
+
+        .page-title { font-size: 1.15rem; font-weight: 700; color: #1e293b; }
+        .topbar-right { display: flex; gap: 0.6rem; align-items: center; }
+        .btn { display: flex; align-items: center; gap: 5px; padding: 6px 14px;
+               border-radius: 8px; border: 1px solid #dbe3ec; background: #fff;
+               cursor: pointer; font-size: 0.8rem; font-weight: 600; color: #334155; }
+        .btn:hover { background: #f8fafc; }
+
+        .summary-grid {
+          display: grid; grid-template-columns: repeat(4,1fr);
+          gap: 10px; margin-bottom: 1.25rem;
+        }
+        .scard { background: #fff; border-radius: 12px; border: 1px solid #e2e8f0; padding: 14px 16px; }
+        .scard-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .5px;
+                       color: #94a3b8; font-weight: 700; margin-bottom: 6px; }
+        .scard-val { font-size: 1.3rem; font-weight: 800; color: #0f172a; }
+        .scard-val.red { color: #dc2626; }
+
+        .toolbar { display: flex; gap: 0.6rem; margin-bottom: 1rem; align-items: center; flex-wrap: wrap; }
+        .search-box { display: flex; align-items: center; gap: 6px; background: #fff;
+                      border: 1px solid #dbe3ec; border-radius: 8px; padding: 6px 12px; }
+        .search-box input { border: none; outline: none; background: transparent; font-size: 0.82rem; width: 200px; }
+
+        .table-card { background: #fff; border-radius: 14px; border: 1px solid #e2e8f0; overflow: hidden; }
+
+        .tab-bar { display: flex; border-bottom: 1px solid #e2e8f0; padding: 0 1rem; }
+        .tab-item { padding: 10px 16px; font-size: 0.8rem; cursor: pointer;
+                    color: #64748b; border-bottom: 2px solid transparent;
+                    margin-bottom: -1px; white-space: nowrap; }
+        .tab-item:hover { color: #334155; }
+        .tab-item.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+
+        .tbl-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+
+        .th-group { background: #1e88e5; color: #fff; text-align: center;
+                    font-size: 0.72rem; font-weight: 700; padding: 8px 10px;
+                    border-right: 1px solid rgba(255,255,255,0.2); }
+        .th-group.gray { background: #334155; }
+        .th-group.teal { background: #0891b2; }
+
+        th { background: #f8fafc; padding: 9px 10px; text-align: left;
+             font-size: 0.7rem; font-weight: 700; color: #64748b;
+             text-transform: uppercase; white-space: nowrap;
+             border-bottom: 1px solid #e2e8f0; border-top: 1px solid #e2e8f0; }
+        th.right, td.right { text-align: right; }
+        td { padding: 9px 10px; border-bottom: 1px solid #f1f5f9;
+             font-size: 0.8rem; color: #1e293b; white-space: nowrap; }
+        tr:hover td { background: #f8fafc; }
+        tfoot td { background: #eff6ff; font-weight: 700; font-size: 0.8rem;
+                   border-top: 1px solid #bfdbfe; }
+
+        .empty-state { padding: 3rem; text-align: center; color: #94a3b8; font-size: 0.85rem; }
+
+        .filter-panel { background: #fff; border: 1px solid #e2e8f0;
+                        border-radius: 10px; padding: 12px; margin-bottom: 1rem; }
+        .filter-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+                        color: #64748b; margin-bottom: 5px; display: block; }
+        .filter-select { padding: 6px 10px; border-radius: 7px; border: 1px solid #e2e8f0;
+                         font-size: 0.8rem; background: #fff; width: 180px; }
+
+        .form-card { padding: 1.25rem; }
+        .form-grid { display: grid; gap: 1rem; }
+        .form-field { display: grid; gap: 0.35rem; }
+        .form-field label { font-size: 0.75rem; font-weight: 700; color: #475569; }
+        .field-value { font-size: 0.95rem; font-weight: 700; color: #0f172a;
+                       padding: 10px 12px; border-radius: 10px;
+                       background: #f8fafc; border: 1px solid #e2e8f0; }
+        .inline-input {
+          width: 100%; border: 1px solid #e2e8f0; border-radius: 7px;
+          padding: 7px 10px; font-size: 0.82rem;
+          background: #f8fafc; color: #1e293b; font-family: 'Segoe UI', sans-serif;
+          outline: none;
+        }
+        .inline-input:focus { border-color: #2563eb; background: #fff;
+                              box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+
+        .col-divider { border-left: 2px solid #e2e8f0; }
       `}</style>
 
       <div className="layout">
         <Sidebar />
 
-        {/* ── Topbar ── */}
         <header className="topbar">
-          <div className="topbar-left">Kontrol PPh</div>
+          <div className="page-title">Kontrol PPN</div>
           <div className="topbar-right">
-            <button className="btn-export" onClick={handleExportCSV}>
+            <button className="btn" onClick={handleExportCSV}>
               <Download size={13} /> Export CSV
-            </button>
-            <button className="user-info-btn" onClick={() => router.push('/dashboard/profil')} title="Lihat Profil">
-              <div className="user-info">
-                <span className="user-name">{displayName}</span>
-                <span className="user-role">{displayRole}</span>
-              </div>
-              <div className="avatar">{displayAvatar}</div>
-              <ChevronRight size={14} className="chevron-hint" />
             </button>
           </div>
         </header>
 
         <main className="main">
-          <div className="main-content">
+          <div className="page">
 
-            {/* ── Error Toast ── */}
-            {updateError && (
-              <div className="error-toast">
-                <span>{updateError}</span>
-                <button onClick={() => setUpdateError(null)}><X size={14} /></button>
+            {/* SUMMARY CARDS */}
+            <div className="summary-grid">
+              <div className="scard">
+                <div className="scard-label">Total Penjualan</div>
+                <div className="scard-val">Rp {fmt(totalPenyerahan)}</div>
               </div>
-            )}
-
-            {/* ── Summary Cards ── */}
-            {!loading && (
-              <div className="summary-cards">
-                <div className="summary-card">
-                  <div className="card-label">Total Transaksi</div>
-                  <div className="card-value blue">{filtered.length}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="card-label">Total DPP</div>
-                  <div className="card-value">Rp {fmt(totalDPP)}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="card-label">Total PPh 23 (2%)</div>
-                  <div className="card-value orange">Rp {fmt(totalPPh23)}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="card-label">Bupot Terbit</div>
-                  <div className="card-value" style={{ color: '#15803d' }}>
-                    {filtered.filter(r => r.status_bupot === 'terbit').length}
-                  </div>
-                </div>
-                <div className="summary-card">
-                  <div className="card-label">Bupot Belum Terbit</div>
-                  <div className="card-value" style={{ color: '#dc2626' }}>
-                    {filtered.filter(r => (r.status_bupot ?? 'tidak_terbit') === 'tidak_terbit').length}
-                  </div>
-                </div>
+              <div className="scard">
+                <div className="scard-label">Total PPN Terutang</div>
+                <div className="scard-val">Rp {fmt(totalPPN)}</div>
               </div>
-            )}
+              <div className="scard">
+                <div className="scard-label">Total PM (Pembelian)</div>
+                <div className="scard-val">Rp {fmt(totalPM)}</div>
+              </div>
+              <div className="scard">
+                <div className="scard-label">Total Kurang Bayar</div>
+                <div className="scard-val red">Rp {fmt(totalKurangBayar)}</div>
+              </div>
+            </div>
 
-            {/* ── Toolbar ── */}
+            {/* TOOLBAR */}
             <div className="toolbar">
               <div className="search-box">
-                <Search size={14} color="#94a3b8" />
+                <Search size={13} color="#94a3b8" />
                 <input
-                  type="text"
-                  placeholder="Cari nama pemotong, invoice, kode jasa..."
+                  placeholder="Cari masa atau NTPN..."
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                 />
-                {search && (
-                  <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', display: 'flex' }} onClick={() => setSearch('')}>
-                    <X size={13} />
-                  </button>
-                )}
               </div>
-
-              <button
-                className={`btn-filter ${filterOpen ? 'active' : ''}`}
-                onClick={() => setFilterOpen(v => !v)}
-              >
-                <SlidersHorizontal size={14} />
+              <button className="btn" onClick={() => setFilterOpen(!filterOpen)}>
+                <SlidersHorizontal size={13} />
                 Filter
-                <ChevronDown size={13} style={{ transform: filterOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
-                {hasActiveFilter && <span className="filter-badge">!</span>}
+                <ChevronDown size={12} />
               </button>
-
-              {hasActiveFilter && (
-                <button className="btn-clear" onClick={clearFilters}>
-                  <X size={13} /> Reset Filter
+              {filterMasa && (
+                <button className="btn" onClick={() => setFilterMasa('')}>
+                  <X size={12} /> {filterMasa}
                 </button>
               )}
-
-              <span className="result-count">
-                Menampilkan <strong>{filtered.length}</strong> dari <strong>{data.length}</strong> transaksi
-              </span>
             </div>
 
-            {/* ── Filter Panel ── */}
             {filterOpen && (
               <div className="filter-panel">
-                <div className="filter-group">
-                  <label>Masa Pajak</label>
-                  <div className="select-wrap">
-                    <select value={filterMasa} onChange={e => setFilterMasa(e.target.value)}>
-                      <option value="">Semua Masa</option>
-                      {MASA_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <ChevronDown size={13} />
-                  </div>
-                </div>
-
-                <div className="filter-group">
-                  <label>Tahun</label>
-                  <div className="select-wrap">
-                    <select value={filterTahun} onChange={e => setFilterTahun(e.target.value)}>
-                      <option value="">Semua Tahun</option>
-                      {tahunList.map(y => <option key={y} value={y}>{y}</option>)}
-                    </select>
-                    <ChevronDown size={13} />
-                  </div>
-                </div>
-
-                <div className="filter-group">
-                  <label>Status Bupot</label>
-                  <div className="select-wrap">
-                    <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-                      <option value="">Semua Status</option>
-                      {STATUS_BUPOT_OPTIONS.map(o => (
-                        <option key={o.value} value={o.value}>{o.label}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={13} />
-                  </div>
-                </div>
-
-                <div className="filter-group">
-                  <label>Rentang DPP (Rp)</label>
-                  <div className="filter-range">
-                    <input type="text" placeholder="Min" value={filterMinDPP} onChange={e => setFilterMinDPP(e.target.value)} />
-                    <span>–</span>
-                    <input type="text" placeholder="Max" value={filterMaxDPP} onChange={e => setFilterMaxDPP(e.target.value)} />
-                  </div>
-                </div>
-
-                <div className="filter-panel-footer">
-                  <button className="btn-clear" onClick={clearFilters}><X size={12} /> Reset</button>
-                  <button className="btn-apply" onClick={() => setFilterOpen(false)}>Terapkan</button>
-                </div>
+                <label className="filter-label">Masa Pajak</label>
+                <select
+                  className="filter-select"
+                  value={filterMasa}
+                  onChange={e => setFilterMasa(e.target.value)}
+                >
+                  <option value="">Semua Masa</option>
+                  {MASA_ORDER.map(m => <option key={m}>{m}</option>)}
+                </select>
               </div>
             )}
 
-            {/* ── Active Filter Tags ── */}
-            {hasActiveFilter && (
-              <div className="filter-tags">
-                {search && (
-                  <span className="filter-tag">Cari: &ldquo;{search}&rdquo;<button onClick={() => setSearch('')}><X size={11} /></button></span>
-                )}
-                {filterMasa && (
-                  <span className="filter-tag">Masa: {filterMasa}<button onClick={() => setFilterMasa('')}><X size={11} /></button></span>
-                )}
-                {filterTahun && (
-                  <span className="filter-tag">Tahun: {filterTahun}<button onClick={() => setFilterTahun('')}><X size={11} /></button></span>
-                )}
-                {filterStatus && (
-                  <span className="filter-tag">
-                    Status: {STATUS_BUPOT_OPTIONS.find(o => o.value === filterStatus)?.label}
-                    <button onClick={() => setFilterStatus('')}><X size={11} /></button>
-                  </span>
-                )}
-                {(filterMinDPP || filterMaxDPP) && (
-                  <span className="filter-tag">
-                    DPP: {filterMinDPP || '0'} – {filterMaxDPP || '∞'}
-                    <button onClick={() => { setFilterMinDPP(''); setFilterMaxDPP('') }}><X size={11} /></button>
-                  </span>
-                )}
-              </div>
-            )}
+            {/* TABLE WITH TABS */}
+            <div className="table-card">
 
-            {/* ── Table ── */}
-            <div className="excel-wrap">
-              <div className="excel-title-bar">
-                <h2>Kontrol PPh</h2>
-                {hasActiveFilter && (
-                  <span>{filtered.length} dari {data.length} data ditampilkan</span>
-                )}
-              </div>
-              <div className="table-wrap">
-                {loading ? (
-                  <div className="loading-state">Memuat data...</div>
-                ) : data.length === 0 ? (
-                  <div className="empty-state">Belum ada transaksi PPh 23 yang tercatat.</div>
-                ) : filtered.length === 0 ? (
-                  <div className="no-results">
-                    <strong>Tidak ada data yang cocok</strong>
-                    Coba ubah atau hapus filter yang aktif.
+              <div className="tab-bar">
+                {TABS.map(t => (
+                  <div
+                    key={t.key}
+                    className={`tab-item${activeTab === t.key ? ' active' : ''}`}
+                    onClick={() => setActiveTab(t.key)}
+                  >
+                    {t.label}
                   </div>
-                ) : (
-                  <table className="excel">
+                ))}
+              </div>
+
+              {/* ── TAB: PENJUALAN ── */}
+              {activeTab === 'penjualan' && (
+                <div className="tbl-wrap">
+                  <table>
                     <thead>
                       <tr>
-                        <th>No</th>
-                        <th>Tanggal</th>
-                        <th>Masa</th>
-                        <th>Invoice</th>
-                        <th>Nama Pemotong</th>
-                        <th>NPWP</th>
-                        <th>Kode Jasa</th>
-                        <th>Jenis Jasa</th>
-                        <th className="right">DPP</th>
-                        <th>Tarif</th>
-                        <th className="right">Pajak</th>
-                        <th>Status Bupot</th>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle', minWidth: 110, background: '#f8fafc' }}>
+                          Masa Pajak
+                        </th>
+                        <th colSpan={2} className="th-group" style={{ textAlign: 'center' }}>
+                          Penyerahan Lainnya
+                          <br />
+                          <span style={{ fontWeight: 400, fontSize: '0.65rem' }}>
+                            (dengan Faktur Pajak Kode 01, 09 dan 10)
+                          </span>
+                        </th>
+                        <th colSpan={2} className="th-group teal" style={{ textAlign: 'center' }}>
+                          Penyerahan kepada Pemungut PPN
+                          <br />
+                          <span style={{ fontWeight: 400, fontSize: '0.65rem' }}>
+                            (dengan Faktur Pajak Kode 02 dan 03)
+                          </span>
+                        </th>
+                        <th colSpan={3} className="th-group gray" style={{ textAlign: 'center' }}>
+                          TOTAL
+                        </th>
+                      </tr>
+                      <tr>
+                        <th className="right">Nilai Bruto</th>
+                        <th className="right">PPN Terutang</th>
+                        <th className="right col-divider">Nilai Bruto</th>
+                        <th className="right">PPN Terutang</th>
+                        <th className="right col-divider">Penghasilan</th>
+                        <th className="right">s.d Bulan Ini</th>
+                        <th className="right">PPN Terutang</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {displayedData.map((row, i) => {
-                        const dpp   = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
-                        const pajak = Math.round(row.total_jasa * 0.02)
-                        const currentStatus = row.status_bupot ?? 'tidak_terbit'
-                        return (
-                          <tr key={row.id}>
-                            <td className="muted">{startIndex + i + 1}</td>
-                            <td>{row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-'}</td>
-                            <td>{row.masa || '-'}</td>
-                            <td className="mono">{row.nomor_transaksi || '-'}</td>
-                            <td className="left">{row.pembeli || '-'}</td>
-                            <td className="muted">{row.npwp_pembeli || '-'}</td>
-                            <td className="mono">{row.kode_jasa || '-'}</td>
-                            <td className="left">{row.jenis_jasa || '-'}</td>
-                            <td className="right">{fmt(dpp)}</td>
-                            <td>2%</td>
-                            <td className="right bold" style={{ color: '#d97706' }}>{fmt(pajak)}</td>
-                            <td>
-                              <div className="status-cell">
-                                <select
-                                  className={`status-select s-${currentStatus}`}
-                                  value={currentStatus}
-                                  disabled={updatingId === row.id}
-                                  onChange={e => handleStatusChange(row.id, e.target.value)}
-                                  title="Ubah status bupot"
-                                >
-                                  {STATUS_BUPOT_OPTIONS.map(o => (
-                                    <option key={o.value} value={o.value}>{o.label}</option>
-                                  ))}
-                                </select>
-                                {updatingId === row.id && <span className="status-spinner" />}
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
+                      {loadingTrx ? (
+                        <tr>
+                          <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#94a3b8' }}>
+                            Memuat data...
+                          </td>
+                        </tr>
+                      ) : filteredPenjualan.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="empty-state">Tidak ada data transaksi</td>
+                        </tr>
+                      ) : filteredPenjualan.map(row => (
+                        <tr key={row.masa}>
+                          <td style={{ fontWeight: 600 }}>{row.masa}</td>
+                          <td className="right">{row.nb_badan       ? fmt(row.nb_badan)       : '—'}</td>
+                          <td className="right">{row.ppn_badan      ? fmt(row.ppn_badan)      : '—'}</td>
+                          <td className="right col-divider">{row.nb_bendahara  ? fmt(row.nb_bendahara)  : '—'}</td>
+                          <td className="right">{row.ppn_bendahara  ? fmt(row.ppn_bendahara)  : '—'}</td>
+                          <td className="right col-divider">{row.penghasilan   ? fmt(row.penghasilan)   : '—'}</td>
+                          <td className="right">{fmt(row.sd_bulan_ini)}</td>
+                          <td className="right" style={{ fontWeight: 600 }}>
+                            {row.total_ppn ? fmt(row.total_ppn) : '—'}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
-                    <tfoot>
-                      <tr>
-                        <td colSpan={8} className="left">TOTAL ({filtered.length} transaksi)</td>
-                        <td className="right">{fmt(totalDPP)}</td>
-                        <td>2%</td>
-                        <td className="right">{fmt(totalPPh23)}</td>
-                        <td></td>
-                      </tr>
-                    </tfoot>
+                    {!loadingTrx && filteredPenjualan.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td>Total</td>
+                          <td className="right">{fmt(sumPenj('nb_badan'))}</td>
+                          <td className="right">{fmt(sumPenj('ppn_badan'))}</td>
+                          <td className="right col-divider">{fmt(sumPenj('nb_bendahara'))}</td>
+                          <td className="right">{fmt(sumPenj('ppn_bendahara'))}</td>
+                          <td className="right col-divider">{fmt(sumPenj('penghasilan'))}</td>
+                          <td className="right">
+                            {filteredPenjualan.length > 0
+                              ? fmt(filteredPenjualan[filteredPenjualan.length - 1].sd_bulan_ini)
+                              : '—'}
+                          </td>
+                          <td className="right">{fmt(sumPenj('total_ppn'))}</td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
-                )}
-              </div>
+                </div>
+              )}
 
-              {/* ── Pagination Bar ── */}
-              {!loading && filtered.length > 0 && (
-                <div className="pagination-bar">
-                  <span className="pagination-info">
-                    Showing <strong>{startIndex + 1}</strong> to <strong>{endIndex}</strong> of <strong>{filtered.length}</strong> results
-                  </span>
-                  <div className="pagination-controls">
-                    <div className="per-page-wrap">
-                      <span>Per page</span>
-                      <div className="per-page-select-wrap">
-                        <select
-                          className="per-page-select"
-                          value={itemsPerPage}
-                          onChange={e => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1) }}
-                        >
-                          {[10, 20, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
-                        </select>
-                        <ChevronDown size={12} />
+              {/* ── TAB: PEMBELIAN ── */}
+              {activeTab === 'pembelian' && (
+                <div className="tbl-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th rowSpan={2} style={{ verticalAlign: 'middle', minWidth: 110, background: '#f8fafc' }}>
+                          Masa Pajak
+                        </th>
+                        <th colSpan={2} className="th-group" style={{ textAlign: 'center' }}>
+                          Pembelian dengan DPP Nilai Lain atau Besaran Tertentu
+                          <br />
+                          <span style={{ fontWeight: 400, fontSize: '0.65rem' }}>
+                            (dengan Faktur Pajak Kode 04 dan 05)
+                          </span>
+                        </th>
+                        <th colSpan={2} className="th-group teal" style={{ textAlign: 'center' }}>
+                          Pembelian dengan DPP Nilai Lain yang dapat dikreditkan
+                          <br />
+                          <span style={{ fontWeight: 400, fontSize: '0.65rem' }}>
+                            (dengan Faktur Pajak Kode 01, 09, dan 10)
+                          </span>
+                        </th>
+                        <th colSpan={3} className="th-group gray" style={{ textAlign: 'center' }}>
+                          Total
+                        </th>
+                      </tr>
+                      <tr>
+                        <th className="right">Nilai Bruto</th>
+                        <th className="right">PPN Terutang</th>
+                        <th className="right col-divider">Nilai Bruto</th>
+                        <th className="right">PPN Terutang</th>
+                        <th className="right col-divider">Penghasilan</th>
+                        <th className="right">s.d Bulan Ini</th>
+                        <th className="right">PPN Terutang</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loadingPmb ? (
+                        <tr>
+                          <td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: '#94a3b8' }}>
+                            Memuat data...
+                          </td>
+                        </tr>
+                      ) : filteredPembelian.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="empty-state">Tidak ada data pembelian</td>
+                        </tr>
+                      ) : filteredPembelian.map(row => (
+                        <tr key={row.masa}>
+                          <td style={{ fontWeight: 600 }}>{row.masa}</td>
+                          <td className="right">{row.nb_normal    ? fmt(row.nb_normal)    : '—'}</td>
+                          <td className="right">{row.ppn_normal   ? fmt(row.ppn_normal)   : '—'}</td>
+                          <td className="right col-divider">{row.nb_lainnya  ? fmt(row.nb_lainnya)  : '—'}</td>
+                          <td className="right">{row.ppn_lainnya  ? fmt(row.ppn_lainnya)  : '—'}</td>
+                          <td className="right col-divider">{row.penghasilan ? fmt(row.penghasilan) : '—'}</td>
+                          <td className="right">{fmt(row.sd_bulan_ini)}</td>
+                          <td className="right" style={{ fontWeight: 600 }}>
+                            {row.total_ppn ? fmt(row.total_ppn) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {!loadingPmb && filteredPembelian.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td>Total</td>
+                          <td className="right">{fmt(sumPmb('nb_normal'))}</td>
+                          <td className="right">{fmt(sumPmb('ppn_normal'))}</td>
+                          <td className="right col-divider">{fmt(sumPmb('nb_lainnya'))}</td>
+                          <td className="right">{fmt(sumPmb('ppn_lainnya'))}</td>
+                          <td className="right col-divider">{fmt(sumPmb('penghasilan'))}</td>
+                          <td className="right">
+                            {filteredPembelian.length > 0
+                              ? fmt(filteredPembelian[filteredPembelian.length - 1].sd_bulan_ini)
+                              : '—'}
+                          </td>
+                          <td className="right">{fmt(sumPmb('total_ppn'))}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              )}
+
+              {/* ── TAB: PERHITUNGAN AKHIR ── */}
+              {activeTab === 'perhitungan' && (
+                <div className="form-card">
+                  {loadingPPN ? (
+                    <div className="empty-state">Memuat data...</div>
+                  ) : (
+                    <div className="form-grid">
+
+                      <div className="form-field">
+                        <label htmlFor="tgl_bayar">Tanggal Bayar</label>
+                        <input
+                          id="tgl_bayar"
+                          className="inline-input"
+                          type="date"
+                          value={perhitunganForm.tgl_bayar}
+                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_bayar: e.target.value }))}
+                        />
                       </div>
+
+                      <div className="form-field">
+                        <label htmlFor="tgl_lapor">Tanggal Lapor</label>
+                        <input
+                          id="tgl_lapor"
+                          className="inline-input"
+                          type="date"
+                          value={perhitunganForm.tgl_lapor}
+                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_lapor: e.target.value }))}
+                        />
+                      </div>
+
+                      <div className="form-field">
+                        <label htmlFor="tgl_pengembalian">Tanggal Pengembalian</label>
+                        <input
+                          id="tgl_pengembalian"
+                          className="inline-input"
+                          type="date"
+                          value={perhitunganForm.tgl_pengembalian}
+                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_pengembalian: e.target.value }))}
+                        />
+                      </div>
+
+                      <div className="form-field">
+                        <label htmlFor="kompensasi">Kompensasi kelebihan pajak masukan</label>
+                        <input
+                          id="kompensasi"
+                          className="inline-input"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="Rp.0"
+                          value={formatCurrency(perhitunganForm.kompensasi)}
+                          onChange={e => handleCurrencyInput(e, 'kompensasi')}
+                          onBlur={e => handleCurrencyBlur(e, 'kompensasi')}
+                        />
+                      </div>
+
+                      <div className="form-field">
+                        <label>Total PPN terutang</label>
+                        <div className="field-value">Rp {fmt(totalPPNTerutang)}</div>
+                      </div>
+
+                      <div className="form-field">
+                        <label htmlFor="ppn_kurang_lebih">
+                          PPN kurang atau lebih bayar pada SPT yang dibetulkan sebelumnya
+                        </label>
+                        <input
+                          id="ppn_kurang_lebih"
+                          className="inline-input"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="Rp.0"
+                          value={formatCurrency(perhitunganForm.ppn_kurang_lebih)}
+                          onChange={e => handleCurrencyInput(e, 'ppn_kurang_lebih')}
+                          onBlur={e => handleCurrencyBlur(e, 'ppn_kurang_lebih')}
+                        />
+                      </div>
+
+                      <div className="form-field">
+                        <label htmlFor="ppn_dibayarkan">PPN dibayarkan</label>
+                        <input
+                          id="ppn_dibayarkan"
+                          className="inline-input"
+                          type="text"
+                          inputMode="numeric"
+                          placeholder="Rp.0"
+                          value={formatCurrency(perhitunganForm.ppn_dibayarkan)}
+                          onChange={e => handleCurrencyInput(e, 'ppn_dibayarkan')}
+                          onBlur={e => handleCurrencyBlur(e, 'ppn_dibayarkan')}
+                        />
+                      </div>
+
+                      <div className="form-field">
+                        <label>PPN kurang bayar</label>
+                        <div className="field-value">Rp {fmt(ppnKurangBayarFinal)}</div>
+                      </div>
+
+                      <div className="form-field">
+                        <label htmlFor="ntpn">NTPN</label>
+                        <input
+                          id="ntpn"
+                          className="inline-input"
+                          type="text"
+                          value={perhitunganForm.ntpn}
+                          onChange={e => setPerhitunganForm(prev => ({ ...prev, ntpn: e.target.value }))}
+                        />
+                      </div>
+
                     </div>
-                    <div className="page-btns">
-                      <button className="page-btn" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>‹</button>
-                      {buildPageList().map((p, idx) =>
-                        p === '...' ? (
-                          <span key={`e-${idx}`} className="page-ellipsis">…</span>
-                        ) : (
-                          <button key={p} className={`page-btn${currentPage === p ? ' active' : ''}`} onClick={() => setCurrentPage(p as number)}>{p}</button>
-                        )
-                      )}
-                      <button className="page-btn" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages || totalPages === 0}>›</button>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
 

@@ -49,11 +49,10 @@ export async function POST(req: Request) {
   }
 
   try {
-    // ── 1. Ambil data user (termasuk status_pkp untuk has_ppn) ──
     const { data: userData, error: userError } = await supabase
       .from('users')
       .select('kode_perusahaan, npwp, status_pkp')
-      .eq('id', userId)
+      .eq('auth_id', userId)
       .single()
 
     if (userError || !userData) {

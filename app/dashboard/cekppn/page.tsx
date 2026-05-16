@@ -55,20 +55,35 @@ const prefixMap: Record<string, string> = {
 }
 
 async function saveTransaksiToDatabase(transaksiData: TransaksiData, userId: string) {
+  console.log('Calling API with userId:', userId)
+  console.log('transaksiData:', JSON.stringify(transaksiData))
   try {
     const response = await fetch('/api/transaksi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transaksiData, userId }),
     })
-    const result = await response.json()
+
+    // Tambahkan ini untuk debug
+    const rawText = await response.text()
+    console.log('Status:', response.status)
+    console.log('Raw response:', rawText)
+
+    let result
+    try {
+      result = JSON.parse(rawText)
+    } catch {
+      return { success: false, error: `Response bukan JSON: ${rawText}` }
+    }
+
     if (!response.ok || !result.success) {
-      console.error('API transaksi error:', result)
+      console.error('API transaksi error detail:', result)
       return { success: false, error: result.error || 'Gagal menyimpan transaksi' }
     }
+
     return { success: true, transaksiId: result.transaksiId, nomorTransaksi: result.nomorTransaksi }
   } catch (error) {
-    console.error('Error saving transaksi via API:', error)
+    console.error('Fetch error:', error)
     const message = error instanceof Error ? error.message : JSON.stringify(error)
     return { success: false, error: message || 'Unknown error' }
   }
@@ -84,7 +99,7 @@ function InputPPNStep({
   transaksi: TransaksiData | null
 }) {
   const totalNilai = Number(transaksi?.nilaiDPP?.replace(/\D/g, '') || 0)
-  const ppn = Math.round(totalNilai * 0.12)
+  const ppn = Math.round(totalNilai * 0.11)
   const totalAkhir = totalNilai + ppn
 
   const fmt = (n: number) => `Rp ${n.toLocaleString('id-ID')}`
@@ -212,7 +227,7 @@ function InputPPNStep({
               <strong>{fmt(totalNilai)}</strong>
             </div>
             <div className="summary-row highlight-green">
-              <span>PPN (12%)</span>
+              <span>PPN (11%)</span>
               <strong>{fmt(ppn)}</strong>
             </div>
             <div className="summary-divider" />
@@ -236,13 +251,12 @@ function InputPPNStep({
   )
 }
 
-function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, defaultNpwpPenjual, isSaving }: {
+function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, defaultNpwpPenjual }: {
   onNext: (data: TransaksiData) => void
   onRollback: () => void
   initialData?: TransaksiData | null
   defaultPenjual: string
   defaultNpwpPenjual: string
-  isSaving?: boolean
 }) {
   const [form, setForm] = useState<TransaksiData>(initialData || { deskripsi: '', nilaiDPP: '', tanggal: '', jenisWP: 'orang_pribadi' })
   const [masa, setMasa] = useState(initialData?.masa || '')
@@ -476,8 +490,9 @@ function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, d
         </div>
       </div>
       <div className="button-row">
-        <button className="btn-primary" disabled={!penjual || !pembeli || isSaving} onClick={handleSubmit}>
-          {isSaving ? 'Menyimpan...' : 'Lanjutkan'} <ChevronRight size={16} />
+        {/* isSaving dihapus dari sini — save sekarang terjadi di step Tagihan */}
+        <button className="btn-primary" disabled={!penjual || !pembeli} onClick={handleSubmit}>
+          Lanjutkan <ChevronRight size={16} />
         </button>
       </div>
     </div>
@@ -579,30 +594,67 @@ function DraftBupotStep({ onNext, onRollback, transaksi }: {
   )
 }
 
-function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback }: {
+// ── TagihanStep: simpan ke database HANYA saat pertama kali render (mount) ─────
+function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback, userId, onSaveSuccess }: {
   profil: ProfilData | null
   transaksi: TransaksiData | null
   hasPPN: boolean
   hasBupot: boolean
   onReset: () => void
   onRollback: () => void
+  userId: string | undefined
+  onSaveSuccess: (nomorTransaksi: string) => void
 }) {
   const router = useRouter()
+  const savedRef = useRef(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  // Simpan ke database sekali saat tagihan pertama kali tampil
+  useEffect(() => {
+    if (savedRef.current) return           // sudah pernah disimpan di sesi ini
+    if (!userId || !transaksi) return
+    if (transaksi.nomorTransaksi) return   // sudah ada nomor → sudah tersimpan sebelumnya
+
+    savedRef.current = true
+    setIsSaving(true)
+    setSaveError(null)
+
+    saveTransaksiToDatabase(transaksi, userId)
+      .then((result) => {
+        if (!result.success) {
+          setSaveError(result.error || 'Gagal menyimpan transaksi')
+          savedRef.current = false          // izinkan retry
+        } else if (result.nomorTransaksi) {
+          onSaveSuccess(result.nomorTransaksi)
+        }
+      })
+      .catch((err) => {
+        setSaveError(err instanceof Error ? err.message : 'Unknown error')
+        savedRef.current = false
+      })
+      .finally(() => setIsSaving(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const totalJasa   = transaksi?.jasaRows?.reduce((s, r)   => s + (Number(r.harga.replace(/\D/g, '')) || 0), 0) ?? 0
   const totalBarang = transaksi?.barangRows?.reduce((s, r) => s + (Number(r.harga.replace(/\D/g, '')) || 0), 0) ?? 0
   const dpp   = totalJasa + totalBarang
-  const ppn   = hasPPN   ? Math.round(dpp       * 0.12) : 0
+  const ppn   = hasPPN   ? Math.round(dpp       * 0.11) : 0
   const bupot = hasBupot ? Math.round(totalJasa  * 0.02) : 0
-  const total = dpp + ppn - bupot
+  // Khusus untuk pembeli bertipe Bendahara Pemerintah: total hanya dihitung dari Sub Total (DPP)
+  // dan dikurangi PPh 23 (bupot). PPN tetap ditampilkan tetapi tidak dimasukkan ke total.
+  const isBendaharaPembeli = transaksi?.jenisWP === 'bendahara_pemerintah'
+  const total = isBendaharaPembeli ? dpp - bupot : dpp + ppn - bupot
   const fmt   = (n: number) => n.toLocaleString('id-ID')
 
-  const handlePrint = () => {
-    const nomorFaktur = transaksi?.nomorTransaksi
-      ? transaksi.nomorTransaksi
-      : transaksi?.tanggal
-        ? `INV-${prefixMap[transaksi.jenisWP] ?? 'XX'}-???-${transaksi.tanggal.replace(/-/g, '')}`
-        : '-'
+  const nomorFaktur = transaksi?.nomorTransaksi
+    ? transaksi.nomorTransaksi
+    : transaksi?.tanggal
+      ? `INV-${prefixMap[transaksi.jenisWP] ?? 'XX'}-???-${transaksi.tanggal.replace(/-/g, '')}`
+      : '-'
 
+  const handlePrint = () => {
     const jasaRowsHTML = (transaksi?.jasaRows?.filter(r => r.nama.trim()) ?? []).length === 0
       ? `<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:0.5rem;">Tidak ada jasa</td></tr>`
       : (transaksi?.jasaRows?.filter(r => r.nama.trim()) ?? []).map((row, i) => `
@@ -708,6 +760,7 @@ function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback 
             <div class="summary-row"><span>Sub Total</span><strong>Rp ${fmt(dpp)}</strong></div>
             ${hasPPN ? `<div class="summary-row green"><span>PPN / VAT</span><strong>Rp ${fmt(ppn)}</strong></div>` : ''}
             ${hasBupot ? `<div class="summary-row orange"><span>PPh 23 / Income Tax 23</span><strong>- Rp ${fmt(bupot)}</strong></div>` : ''}
+            ${isBendaharaPembeli ? `<div class="summary-row" style="font-size:0.85rem;color:#64748b;margin-top:0.25rem;"><span>Catatan</span><strong>PPN tetap ditampilkan tetapi tidak termasuk dalam total untuk Bendahara Pemerintah</strong></div>` : ''}
             <div class="summary-divider"></div>
             <div class="summary-row total"><span>Total Tagihan / Current Charges</span><strong>Rp ${fmt(total)}</strong></div>
           </div>
@@ -730,17 +783,27 @@ function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback 
       <h2 className="step-title">Tagihan</h2>
       <p className="step-desc">Ringkasan hasil perhitungan pajak Anda.</p>
 
+      {/* ── Status penyimpanan ── */}
+      {isSaving && (
+        <div className="save-status saving">Menyimpan transaksi ke database…</div>
+      )}
+      {saveError && (
+        <div className="save-status error">
+          Gagal menyimpan: {saveError}
+          <button
+            className="retry-btn"
+            onClick={() => { savedRef.current = false; setSaveError(null); }}
+          >
+            Coba lagi
+          </button>
+        </div>
+      )}
+
       <div className="form-grid">
         <div className="form-group full-width"><div className="section-title">Informasi Faktur</div></div>
         <div className="form-group full-width">
           <label>Nomor Faktur</label>
-          <div className="readonly-field mono">
-            {transaksi?.nomorTransaksi
-              ? transaksi.nomorTransaksi
-              : transaksi?.tanggal
-                ? `INV-${prefixMap[transaksi.jenisWP] ?? 'XX'}-???-${transaksi.tanggal.replace(/-/g, '')}`
-                : '-'}
-          </div>
+          <div className="readonly-field mono">{nomorFaktur}</div>
         </div>
         <div className="form-group">
           <label>Tanggal</label>
@@ -856,8 +919,8 @@ function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback 
           <button className="btn-outline" onClick={onReset}>
             <RefreshCw size={15} /> Mulai Ulang
           </button>
-          <button className="btn-primary" onClick={handlePrint}>
-            <Printer size={15} /> Cetak / Unduh PDF
+          <button className="btn-primary" onClick={handlePrint} disabled={isSaving}>
+            <Printer size={15} /> {isSaving ? 'Menyimpan…' : 'Cetak / Unduh PDF'}
           </button>
         </div>
       </div>
@@ -895,24 +958,42 @@ export default function CekPPNPage() {
 
   const [currentStep, setCurrentStep] = useState<Step>('input-transaksi')
   const [formData, setFormData] = useState<FormData>({ profil: user?.profil || null, transaksi: null, ppn: null, bupot: null })
-  const [isSaving, setIsSaving] = useState(false)
 
   useEffect(() => {
     if (initializeRef.current) return
+    initializeRef.current = true
+
     const saved = localStorage.getItem('siptax-cekppn-form')
     if (saved) {
       try {
         const parsed = JSON.parse(saved)
-        setFormData(prev => ({ ...parsed, profil: user?.profil || prev.profil }))
+        const savedStep: Step = parsed._step || 'input-transaksi'
+
+        if (savedStep === 'tagihan') {
+          // Transaksi selesai → reset total, mulai dari awal
+          localStorage.removeItem('siptax-cekppn-form')
+        } else if (savedStep !== 'input-transaksi') {
+          // Di tengah alur (ppn/bupot) tapi baru kembali → kembalikan data
+          // transaksi tapi paksa step ke input-transaksi supaya bisa diedit ulang
+          setFormData(prev => ({ ...parsed, profil: user?.profil || prev.profil, transaksi: parsed.transaksi || null, ppn: null, bupot: null }))
+          setCurrentStep('input-transaksi')
+        } else {
+          // Masih di input-transaksi → restore normal
+          setFormData(prev => ({ ...parsed, profil: user?.profil || prev.profil }))
+          setCurrentStep('input-transaksi')
+        }
       } catch { /* ignore */ }
     }
-    initializeRef.current = true
+
     setMounted(true)
   }, [])
 
+  // Simpan formData + step aktif ke localStorage setiap kali berubah
   useEffect(() => {
-    if (mounted) localStorage.setItem('siptax-cekppn-form', JSON.stringify(formData))
-  }, [formData, mounted])
+    if (mounted) {
+      localStorage.setItem('siptax-cekppn-form', JSON.stringify({ ...formData, _step: currentStep }))
+    }
+  }, [formData, currentStep, mounted])
 
   const hasPPN   = formData.profil?.status === 'PKP'
   const hasBupot = formData.transaksi && (formData.transaksi.jenisWP === 'badan' || formData.transaksi.jenisWP === 'bendahara_pemerintah')
@@ -926,31 +1007,35 @@ export default function CekPPNPage() {
 
   const stepIndex = allSteps.findIndex((s) => s.key === currentStep)
 
-  const handleTransaksiNext = async (data: TransaksiData) => {
-    setIsSaving(true)
-    try {
-      if (user?.id) {
-        const result = await saveTransaksiToDatabase(data, user.id)
-        if (!result.success) { alert(`Gagal menyimpan transaksi: ${result.error}`); return }
-        data = { ...data, nomorTransaksi: result.nomorTransaksi }
-      }
-      updateFormData(current => ({ ...current, transaksi: data }))
-      if (hasPPN) setCurrentStep('input-ppn')
-      else if (hasBupot) setCurrentStep('draft-bupot')
-      else setCurrentStep('tagihan')
-    } catch (error) {
-      console.error('Error in handleTransaksiNext:', error)
-      alert('Terjadi kesalahan saat menyimpan transaksi')
-    } finally {
-      setIsSaving(false)
-    }
+  // Simpan hanya data ke state, TANPA hit database
+  const handleTransaksiNext = (data: TransaksiData) => {
+    // Pastikan nomorTransaksi di-reset agar TagihanStep tahu perlu menyimpan ulang
+    const freshData = { ...data, nomorTransaksi: undefined }
+    updateFormData(current => ({ ...current, transaksi: freshData }))
+    if (hasPPN) setCurrentStep('input-ppn')
+    else if (freshData.jenisWP === 'badan' || freshData.jenisWP === 'bendahara_pemerintah') setCurrentStep('draft-bupot')
+    else setCurrentStep('tagihan')
+  }
+
+  // Callback dari TagihanStep setelah berhasil simpan → update nomorTransaksi di state
+  // _step='tagihan' sudah otomatis tersimpan via useEffect, sehingga jika user
+  // berpindah menu lalu kembali, localStorage akan terdeteksi selesai dan direset.
+  const handleSaveSuccess = (nomorTransaksi: string) => {
+    updateFormData(current => ({
+      ...current,
+      transaksi: current.transaksi ? { ...current.transaksi, nomorTransaksi } : current.transaksi,
+    }))
   }
 
   const updateFormData  = (updater: (current: FormData) => FormData) => setFormData(prev => updater(prev))
   const handlePPNNext   = (data: PPNData, nextStep: Step) => { updateFormData(current => ({ ...current, ppn: data })); setCurrentStep(nextStep) }
   const handleBupotNext = (data: BupotData) => { updateFormData(current => ({ ...current, bupot: data })); setCurrentStep('tagihan') }
   const handleRollback  = () => { if (stepIndex > 0) setCurrentStep(allSteps[stepIndex - 1].key) }
-  const handleReset     = () => { setFormData({ profil: null, transaksi: null, ppn: null, bupot: null }); localStorage.removeItem('siptax-cekppn-form'); setCurrentStep('input-transaksi') }
+  const handleReset     = () => {
+    setFormData({ profil: null, transaksi: null, ppn: null, bupot: null })
+    localStorage.removeItem('siptax-cekppn-form')
+    setCurrentStep('input-transaksi')
+  }
 
   // Derived display values
   const displayName   = user?.namaWP || 'User'
@@ -971,7 +1056,6 @@ export default function CekPPNPage() {
         .topbar-left { display: flex; align-items: center; gap: 0.75rem; font-size: 1.35rem; font-weight: 700; color: #1e293b; }
         .topbar-right { display: flex; align-items: center; }
 
-        /* User info — clickable */
         .user-info-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.45rem 0.75rem; border-radius: 12px; cursor: pointer; border: none; background: transparent; transition: background 0.15s; text-align: right; }
         .user-info-btn:hover { background: #f1f5f9; }
         .user-info-btn:hover .avatar { box-shadow: 0 0 0 3px rgba(59,130,246,0.2); }
@@ -1055,6 +1139,13 @@ export default function CekPPNPage() {
         .btn-outline { display: flex; align-items: center; gap: 0.4rem; background: #fff; color: #3b82f6; padding: 0.75rem 1.75rem; border-radius: 8px; font-size: 0.9rem; font-weight: 600; border: 1.5px solid #3b82f6; cursor: pointer; transition: all 0.15s; }
         .btn-outline:hover { background: #eff6ff; }
         .button-row { display: flex; gap: 1rem; justify-content: center; margin-top: 1.5rem; }
+
+        /* ── Status penyimpanan ── */
+        .save-status { width: 100%; padding: 0.65rem 1rem; border-radius: 8px; font-size: 0.82rem; font-weight: 500; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+        .save-status.saving { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+        .save-status.error  { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; justify-content: space-between; }
+        .retry-btn { font-size: 0.78rem; font-weight: 700; color: #dc2626; background: transparent; border: 1.5px solid #fca5a5; border-radius: 6px; padding: 0.2rem 0.6rem; cursor: pointer; }
+        .retry-btn:hover { background: #fee2e2; }
       `}</style>
 
       <div className="layout">
@@ -1094,10 +1185,42 @@ export default function CekPPNPage() {
                 ))}
               </div>
               <div className="modal-body" suppressHydrationWarning>
-                {currentStep === 'input-transaksi' && <InputTransaksiStep onNext={handleTransaksiNext} onRollback={handleRollback} initialData={formData.transaksi} defaultPenjual={sellerName} defaultNpwpPenjual={sellerNPWP} isSaving={isSaving} />}
-                {currentStep === 'input-ppn'       && <InputPPNStep onNext={handlePPNNext} onRollback={handleRollback} hasBupot={Boolean(hasBupot)} transaksi={formData.transaksi} />}
-                {currentStep === 'draft-bupot'     && <DraftBupotStep onNext={handleBupotNext} onRollback={handleRollback} transaksi={formData.transaksi} />}
-                {currentStep === 'tagihan'         && <TagihanStep profil={formData.profil} transaksi={formData.transaksi} hasPPN={Boolean(hasPPN)} hasBupot={Boolean(hasBupot)} onReset={handleReset} onRollback={handleRollback} />}
+                {currentStep === 'input-transaksi' && (
+                  <InputTransaksiStep
+                    onNext={handleTransaksiNext}
+                    onRollback={handleRollback}
+                    initialData={formData.transaksi}
+                    defaultPenjual={sellerName}
+                    defaultNpwpPenjual={sellerNPWP}
+                  />
+                )}
+                {currentStep === 'input-ppn' && (
+                  <InputPPNStep
+                    onNext={handlePPNNext}
+                    onRollback={handleRollback}
+                    hasBupot={Boolean(hasBupot)}
+                    transaksi={formData.transaksi}
+                  />
+                )}
+                {currentStep === 'draft-bupot' && (
+                  <DraftBupotStep
+                    onNext={handleBupotNext}
+                    onRollback={handleRollback}
+                    transaksi={formData.transaksi}
+                  />
+                )}
+                {currentStep === 'tagihan' && (
+                  <TagihanStep
+                    profil={formData.profil}
+                    transaksi={formData.transaksi}
+                    hasPPN={Boolean(hasPPN)}
+                    hasBupot={Boolean(hasBupot)}
+                    onReset={handleReset}
+                    onRollback={handleRollback}
+                    userId={user?.id}
+                    onSaveSuccess={handleSaveSuccess}
+                  />
+                )}
               </div>
             </div>
           </div>
