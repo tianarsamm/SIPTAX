@@ -11,9 +11,9 @@ const nextConfig: NextConfig = {
             value: [
               "default-src 'self'",
               "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-              "style-src 'self' 'unsafe-inline'",
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+              "font-src 'self' data: https://fonts.gstatic.com",
               "img-src 'self' data: blob:",
-              "font-src 'self' data:",
               "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
             ].join("; "),
           },
