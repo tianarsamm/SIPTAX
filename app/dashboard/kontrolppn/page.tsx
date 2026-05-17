@@ -110,7 +110,7 @@ const isBendahara = (jenis_wp: string | null): boolean => {
 const PPN_RATE = 0.11
 
 export default function KontrolPPNPage() {
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
 
   const [data, setData]             = useState<PPNRow[]>([])
   const [loadingPPN, setLoadingPPN] = useState(true)
@@ -160,24 +160,56 @@ export default function KontrolPPNPage() {
 
   // ── Fetch kontrol_ppn ────────────────────────────────────────────────────
   useEffect(() => {
+    if (authLoading) return
     if (!user?.id) return
     const fetchData = async () => {
       setLoadingPPN(true)
       try {
         const { data: rows, error } = await supabaseClient
           .from('kontrol_ppn')
-          .select('*')
+          .select(`
+            id,
+            masa,
+            tanggal,
+            penyerahan_lainnya_nilai_bruto,
+            penyerahan_lainnya_ppn_terutang,
+            penyerahan_pemungut_nilai_bruto,
+            penyerahan_pemungut_ppn_terutang,
+            total_penghasilan,
+            total_sd_bulan_ini,
+            total_ppn_terutang,
+            pmb_dpp_nilai_lain_nilai_bruto,
+            pmb_dpp_nilai_lain_ppn_terutang,
+            pmb_skp_luar_negeri_nilai_bruto,
+            pmb_skp_luar_negeri_ppn_terutang,
+            total_pmb_penghasilan,
+            total_pmb_sd_bulan_ini,
+            total_pmb_ppn_terutang,
+            kompensasi_kelebihan_pm,
+            total_ppn_terutang_final,
+            ppn_kurang_lebih_bayar_spt,
+            ppn_diperhitungkan,
+            ppn_kurang_bayar,
+            ntpn_surat_ket_pbk,
+            tgl_bayar,
+            tgl_lapor,
+            tgl_pengembalian,
+            status_lapor
+          `)
+          .eq('user_id', user.id)
           .order('tanggal', { ascending: true })
+          .range(0, 49)
         if (error) { console.error(error); setData([]) }
         else setData(rows || [])
       } catch (e) { console.error(e); setData([]) }
       finally { setLoadingPPN(false) }
     }
     fetchData()
-  }, [user?.id])
+  }, [user?.id, authLoading])
 
   // ── Fetch transaksi ──────────────────────────────────────────────────────
   useEffect(() => {
+    if (authLoading) return
     if (!user?.id) return
     const fetchTrx = async () => {
       setLoadingTrx(true)
@@ -185,17 +217,20 @@ export default function KontrolPPNPage() {
         const { data: rows, error } = await supabaseClient
           .from('transaksi')
           .select('id, masa, tanggal, jenis_wp, total_nilai_transaksi, has_ppn')
+          .eq('user_id', user.id)
           .order('tanggal', { ascending: true })
+          .range(0, 49)
         if (error) { console.error(error); setTransaksi([]) }
         else setTransaksi(rows || [])
       } catch (e) { console.error(e); setTransaksi([]) }
       finally { setLoadingTrx(false) }
     }
     fetchTrx()
-  }, [user?.id])
+  }, [user?.id, authLoading])
 
   // ── Fetch pembelian_ppn ───────────────────────────────────────────────────
   useEffect(() => {
+    if (authLoading) return
     if (!user?.id) return
     const fetchPmb = async () => {
       setLoadingPmb(true)
@@ -203,7 +238,9 @@ export default function KontrolPPNPage() {
         const { data: rows, error } = await supabaseClient
           .from('pembelian_ppn')
           .select('id, masa, tanggal_faktur, dpp, ppn, keterangan')
+          .eq('user_id', user.id)
           .order('tanggal_faktur', { ascending: true })
+          .range(0, 49)
         if (error) { console.error('pembelian_ppn error:', error); setPembelian([]) }
         else {
           const normalized = (rows || []).map((r: Record<string, unknown>) => ({
@@ -218,7 +255,7 @@ export default function KontrolPPNPage() {
       finally { setLoadingPmb(false) }
     }
     fetchPmb()
-  }, [user?.id])
+  }, [user?.id, authLoading])
 
   // ── Aggregate: penjualan ─────────────────────────────────────────────────
   const penjualanRows = useMemo((): PenjualanRow[] => {
