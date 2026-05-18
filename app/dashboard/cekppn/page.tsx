@@ -277,7 +277,7 @@ function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, d
   useEffect(() => {
     if (form.tanggal) {
       const date = new Date(form.tanggal)
-      const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December']
+      const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
       setMasa(monthNames[date.getMonth()])
     }
   }, [form.tanggal])
@@ -390,7 +390,7 @@ function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, d
           <label>Masa <span className="nomor-badge">Auto</span></label>
           <select value={masa} disabled>
             <option value="">Masa</option>
-            {['January','February','March','April','May','June','July','August','September','October','November','December'].map(m => <option key={m} value={m}>{m}</option>)}
+            {['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'].map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
         <div className="form-group full-width">

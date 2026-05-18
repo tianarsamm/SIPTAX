@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
+import { MASA_OPTIONS, normalizeMasa } from '@/lib/masa'
 import { ChevronRight, Search, SlidersHorizontal, X, ChevronDown, Download } from 'lucide-react'
 import Sidebar from '@/components/Sidebar'
 
@@ -24,11 +25,6 @@ interface ArsipPPNRow {
   has_ppn: boolean
   status_bupot?: string
 }
-
-const MASA_OPTIONS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December',
-]
 
 const STATUS_BUPOT_OPTIONS = [
   { value: 'terbit',       label: 'Terbit' },
@@ -123,13 +119,14 @@ export default function ArsipPPNPage() {
   const filtered = useMemo(() => {
     return data.filter(row => {
       const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
+      const rowMasa = normalizeMasa(row.masa)
       if (search) {
         const q = search.toLowerCase()
-        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, row.masa, row.jenis_wp]
+        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, rowMasa, row.jenis_wp]
           .some(v => v?.toLowerCase().includes(q))
         if (!match) return false
       }
-      if (filterMasa && row.masa !== filterMasa) return false
+      if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
       if (filterTahun && row.tanggal) {
         if (new Date(row.tanggal).getFullYear().toString() !== filterTahun) return false
       }

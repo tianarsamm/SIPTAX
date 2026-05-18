@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, Dispatch, SetStateAction } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
+import { MASA_OPTIONS, normalizeMasa } from '@/lib/masa'
 import {
   ChevronRight, Search, SlidersHorizontal, X,
   ChevronDown, Download, History,
@@ -35,11 +36,6 @@ type RawRow = Omit<PembelianRecord, 'dpp' | 'ppn' | 'tahun'> & {
   ppn:   string | number | null
   tahun: string | number | null
 }
-
-const MASA_OPTIONS = [
-  'Januari','Februari','Maret','April','Mei','Juni',
-  'Juli','Agustus','September','Oktober','November','Desember',
-]
 
 const KETERANGAN_OPTIONS = [
   { value: 'Normal',                 label: 'Normal' },
@@ -177,13 +173,14 @@ useEffect(() => {
   // ── Filtered data ──
   const filtered = useMemo(() => {
     return data.filter(row => {
+      const rowMasa = normalizeMasa(row.masa)
       if (search) {
         const q = search.toLowerCase()
-        const match = [row.lawan_transaksi, row.no_faktur, row.npwp, row.masa, row.keterangan]
+        const match = [row.lawan_transaksi, row.no_faktur, row.npwp, rowMasa, row.keterangan]
           .some(v => v?.toLowerCase().includes(q))
         if (!match) return false
       }
-      if (filterMasa       && row.masa              !== filterMasa)       return false
+      if (filterMasa       && rowMasa              !== normalizeMasa(filterMasa))       return false
       if (filterTahun      && row.tahun?.toString() !== filterTahun)      return false
       if (filterKeterangan && row.keterangan        !== filterKeterangan) return false
       if (filterMinDPP     && row.dpp < Number(filterMinDPP.replace(/\D/g, ''))) return false
@@ -229,7 +226,7 @@ useEffect(() => {
       row.no_faktur        || '-',
       row.npwp             || '-',
       `"${row.lawan_transaksi}"`,
-      row.masa             || '-',
+      normalizeMasa(row.masa) || '-',
       row.tahun            || '-',
       row.dpp,
       row.ppn,
@@ -746,7 +743,7 @@ useEffect(() => {
                                 })
                               : '-'}
                           </td>
-                          <td>{row.masa || '-'}</td>
+                          <td>{normalizeMasa(row.masa) || '-'}</td>
                           <td>{row.tahun || '-'}</td>
                           <td className="right">{fmt(row.dpp)}</td>
                           <td className="right bold" style={{ color: '#d97706' }}>{fmt(row.ppn)}</td>

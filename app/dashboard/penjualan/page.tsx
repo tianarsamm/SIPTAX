@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
+import { MASA_OPTIONS, normalizeMasa } from '@/lib/masa'
 import { Printer, ChevronRight, Search, SlidersHorizontal, X, ChevronDown } from 'lucide-react'
 import Sidebar from '@/components/Sidebar'
 
@@ -28,11 +29,6 @@ interface TransaksiRow {
   jasa_rows: { nama: string; harga: string }[]
   barang_rows: { nama: string; harga: string }[]
 }
-
-const MASA_OPTIONS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December',
-]
 
 const JENIS_WP_OPTIONS = [
   { value: 'badan', label: 'Badan' },
@@ -99,14 +95,15 @@ export default function PenjualanPage() {
   const filtered = useMemo(() => {
     return data.filter(row => {
       const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
+      const rowMasa = normalizeMasa(row.masa)
 
       if (search) {
         const q = search.toLowerCase()
-        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, row.masa]
+        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, rowMasa]
           .some(v => v?.toLowerCase().includes(q))
         if (!match) return false
       }
-      if (filterMasa && row.masa !== filterMasa) return false
+      if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
       if (filterTahun && row.tanggal) {
         if (new Date(row.tanggal).getFullYear().toString() !== filterTahun) return false
       }
@@ -151,12 +148,12 @@ export default function PenjualanPage() {
 
   // ── Summary totals (filtered) ──
   const totalDPP   = filtered.reduce((s, r) => s + (r.total_nilai_transaksi || r.total_jasa + r.total_barang), 0)
-  const totalPPN   = filtered.reduce((s, r) => { const dpp = r.total_nilai_transaksi || r.total_jasa + r.total_barang; return s + (r.has_ppn ? Math.round(dpp * 0.12) : 0) }, 0)
+  const totalPPN   = filtered.reduce((s, r) => { const dpp = r.total_nilai_transaksi || r.total_jasa + r.total_barang; return s + (r.has_ppn ? Math.round(dpp * 0.11) : 0) }, 0)
   const totalPPh23 = filtered.reduce((s, r) => s + (r.has_bupot ? Math.round(r.total_jasa * 0.02) : 0), 0)
   // Total kas diterima: hitung per-row dengan pengecualian untuk Bendahara Pemerintah
   const totalKas = filtered.reduce((sum, r) => {
     const dpp = r.total_nilai_transaksi || r.total_jasa + r.total_barang
-    const ppn = r.has_ppn ? Math.round(dpp * 0.12) : 0
+    const ppn = r.has_ppn ? Math.round(dpp * 0.11) : 0
     const pph23 = r.has_bupot ? Math.round(r.total_jasa * 0.02) : 0
     const isBendahara = r.jenis_wp === 'bendahara_pemerintah'
     const kas = isBendahara ? dpp - pph23 : dpp + ppn - pph23
@@ -166,7 +163,7 @@ export default function PenjualanPage() {
   const handlePrint = (row: TransaksiRow) => {
     const nomorFaktur = row.nomor_transaksi || '-'
     const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
-    const ppn = row.has_ppn ? Math.round(dpp * 0.12) : 0
+    const ppn = row.has_ppn ? Math.round(dpp * 0.11) : 0
     const bupot = row.has_bupot ? Math.round(row.total_jasa * 0.02) : 0
     const isBendahara = row.jenis_wp === 'bendahara_pemerintah'
     const kasDiterima = isBendahara ? dpp - bupot : dpp + ppn - bupot
@@ -229,7 +226,7 @@ export default function PenjualanPage() {
         <div class="meta-grid">
           <div class="meta-box"><div class="label">Informasi Faktur</div>
             <div class="meta-row"><span>Tanggal</span><strong>${row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-'}</strong></div>
-            <div class="meta-row"><span>Masa</span><strong>${row.masa || '-'}</strong></div>
+            <div class="meta-row"><span>Masa</span><strong>${normalizeMasa(row.masa) || '-'}</strong></div>
             <div class="meta-row"><span>Nomor</span><strong>${nomorFaktur}</strong></div>
           </div>
           <div class="meta-box"><div class="label">Pembeli</div>
@@ -246,7 +243,7 @@ export default function PenjualanPage() {
         <tbody>${barangRowsHTML}<tr class="total-row"><td colspan="2">Total Barang</td><td>Rp ${fmt(row.total_barang)}</td></tr></tbody></table>
         <div class="summary">
           <div class="summary-row"><span>Sub Total</span><strong>Rp ${fmt(dpp)}</strong></div>
-          ${row.has_ppn ? `<div class="summary-row green"><span>PPN / VAT (12%)</span><strong>Rp ${fmt(ppn)}</strong></div>` : ''}
+          ${row.has_ppn ? `<div class="summary-row green"><span>PPN / VAT (11%)</span><strong>Rp ${fmt(ppn)}</strong></div>` : ''}
           ${row.has_bupot ? `<div class="summary-row orange"><span>PPh 23 / Income Tax 23 (2%)</span><strong>- Rp ${fmt(bupot)}</strong></div>` : ''}
           ${isBendahara ? `<div class="summary-row" style="font-size:0.85rem;color:#64748b;margin-top:0.25rem;"><span>Catatan</span><strong>PPN tetap ditampilkan tetapi tidak termasuk dalam total untuk Bendahara Pemerintah</strong></div>` : ''}
           <div class="summary-divider"></div>
@@ -557,7 +554,7 @@ export default function PenjualanPage() {
                         <th className="right">Barang</th>
                         <th className="right">Jasa</th>
                         <th className="right">Total DPP</th>
-                        <th className="right">PPN (12%)</th>
+                        <th className="right">PPN (11%)</th>
                         <th className="right">PPh 23 (2%)</th>
                         <th className="right">Kas Diterima</th>
                         <th>Aksi</th>
@@ -566,7 +563,7 @@ export default function PenjualanPage() {
                     <tbody>
                       {displayedData.map((row, i) => {
                         const dpp   = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
-                        const ppn   = row.has_ppn   ? Math.round(dpp * 0.12) : 0
+                        const ppn   = row.has_ppn   ? Math.round(dpp * 0.11) : 0
                         const pph23 = row.has_bupot ? Math.round(row.total_jasa * 0.02) : 0
                         const isBendaharaRow = row.jenis_wp === 'bendahara_pemerintah'
                         const kas   = isBendaharaRow ? dpp - pph23 : dpp + ppn - pph23
@@ -574,7 +571,7 @@ export default function PenjualanPage() {
                           <tr key={row.id}>
                             <td className="muted">{startIndex + i + 1}</td>
                             <td>{row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-'}</td>
-                            <td>{row.masa || '-'}</td>
+                            <td>{normalizeMasa(row.masa) || '-'}</td>
                             <td className="mono">{row.nomor_transaksi || '-'}</td>
                             <td className="muted">{row.npwp_pembeli || '-'}</td>
                             <td className="left">{row.pembeli || '-'}</td>

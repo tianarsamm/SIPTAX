@@ -1,11 +1,12 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Search, SlidersHorizontal, ChevronDown, Download, X } from 'lucide-react'
+import { Search, SlidersHorizontal, ChevronDown, X, Save, FileDown } from 'lucide-react'
 
 import Sidebar from '@/components/Sidebar'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
+import { MASA_OPTIONS as MASA_ORDER, normalizeMasa } from '@/lib/masa'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,12 +90,16 @@ interface PerhitunganFormState {
   tgl_pengembalian: string
 }
 
-type TabKey = 'penjualan' | 'pembelian' | 'perhitungan'
+interface SavedPerhitungan extends PerhitunganFormState {
+  totalPenyerahan: number
+  totalPPN: number
+  totalPM: number
+  totalPPNTerutang: number
+  ppnKurangBayarFinal: number
+  savedAt: string
+}
 
-const MASA_ORDER = [
-  'Januari','Februari','Maret','April','Mei','Juni',
-  'Juli','Agustus','September','Oktober','November','Desember',
-]
+type TabKey = 'penjualan' | 'pembelian' | 'perhitungan'
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'penjualan',   label: 'Penjualan' },
@@ -134,6 +139,10 @@ export default function KontrolPPNPage() {
     tgl_pengembalian: '',
   })
 
+  // ── State untuk simpan & PDF ─────────────────────────────────────────────
+  const [savedData, setSavedData]       = useState<SavedPerhitungan | null>(null)
+  const [saveSuccess, setSaveSuccess]   = useState(false)
+
   const parseNumber = (value: string) => {
     if (!value) return 0
     const cleaned = value.replace(/Rp\.\s?/g, '').replace(/\./g, '').replace(/,/g, '')
@@ -158,6 +167,20 @@ export default function KontrolPPNPage() {
     setPerhitunganForm(prev => ({ ...prev, [field]: num.toString() }))
   }
 
+  const logFetchError = (context: string, error: unknown) => {
+    if (error instanceof Error) {
+      console.warn(context, error.message)
+    } else if (error && typeof error === 'object') {
+      try {
+        console.warn(context, JSON.stringify(error))
+      } catch {
+        console.warn(context, error)
+      }
+    } else {
+      console.warn(context, error)
+    }
+  }
+
   // ── Fetch kontrol_ppn ────────────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return
@@ -168,40 +191,23 @@ export default function KontrolPPNPage() {
         const { data: rows, error } = await supabaseClient
           .from('kontrol_ppn')
           .select(`
-            id,
-            masa,
-            tanggal,
-            penyerahan_lainnya_nilai_bruto,
-            penyerahan_lainnya_ppn_terutang,
-            penyerahan_pemungut_nilai_bruto,
-            penyerahan_pemungut_ppn_terutang,
-            total_penghasilan,
-            total_sd_bulan_ini,
-            total_ppn_terutang,
-            pmb_dpp_nilai_lain_nilai_bruto,
-            pmb_dpp_nilai_lain_ppn_terutang,
-            pmb_skp_luar_negeri_nilai_bruto,
-            pmb_skp_luar_negeri_ppn_terutang,
-            total_pmb_penghasilan,
-            total_pmb_sd_bulan_ini,
-            total_pmb_ppn_terutang,
-            kompensasi_kelebihan_pm,
-            total_ppn_terutang_final,
-            ppn_kurang_lebih_bayar_spt,
-            ppn_diperhitungkan,
-            ppn_kurang_bayar,
-            ntpn_surat_ket_pbk,
-            tgl_bayar,
-            tgl_lapor,
-            tgl_pengembalian,
-            status_lapor
+            id, masa, tanggal,
+            penyerahan_lainnya_nilai_bruto, penyerahan_lainnya_ppn_terutang,
+            penyerahan_pemungut_nilai_bruto, penyerahan_pemungut_ppn_terutang,
+            total_penghasilan, total_sd_bulan_ini, total_ppn_terutang,
+            pmb_dpp_nilai_lain_nilai_bruto, pmb_dpp_nilai_lain_ppn_terutang,
+            pmb_skp_luar_negeri_nilai_bruto, pmb_skp_luar_negeri_ppn_terutang,
+            total_pmb_penghasilan, total_pmb_sd_bulan_ini, total_pmb_ppn_terutang,
+            kompensasi_kelebihan_pm, total_ppn_terutang_final,
+            ppn_kurang_lebih_bayar_spt, ppn_diperhitungkan, ppn_kurang_bayar,
+            ntpn_surat_ket_pbk, tgl_bayar, tgl_lapor, tgl_pengembalian, status_lapor
           `)
           .eq('user_id', user.id)
           .order('tanggal', { ascending: true })
           .range(0, 49)
-        if (error) { console.error(error); setData([]) }
+        if (error) { logFetchError('kontrol_ppn fetch error', error); setData([]) }
         else setData(rows || [])
-      } catch (e) { console.error(e); setData([]) }
+      } catch (e) { logFetchError('kontrol_ppn exception', e); setData([]) }
       finally { setLoadingPPN(false) }
     }
     fetchData()
@@ -220,9 +226,9 @@ export default function KontrolPPNPage() {
           .eq('user_id', user.id)
           .order('tanggal', { ascending: true })
           .range(0, 49)
-        if (error) { console.error(error); setTransaksi([]) }
+        if (error) { logFetchError('transaksi fetch error', error); setTransaksi([]) }
         else setTransaksi(rows || [])
-      } catch (e) { console.error(e); setTransaksi([]) }
+      } catch (e) { logFetchError('transaksi exception', e); setTransaksi([]) }
       finally { setLoadingTrx(false) }
     }
     fetchTrx()
@@ -241,7 +247,7 @@ export default function KontrolPPNPage() {
           .eq('user_id', user.id)
           .order('tanggal_faktur', { ascending: true })
           .range(0, 49)
-        if (error) { console.error('pembelian_ppn error:', error); setPembelian([]) }
+        if (error) { logFetchError('pembelian_ppn fetch error', error); setPembelian([]) }
         else {
           const normalized = (rows || []).map((r: Record<string, unknown>) => ({
             ...r,
@@ -251,7 +257,7 @@ export default function KontrolPPNPage() {
           })) as PembelianPPNRow[]
           setPembelian(normalized)
         }
-      } catch (e) { console.error(e); setPembelian([]) }
+      } catch (e) { logFetchError('pembelian_ppn exception', e); setPembelian([]) }
       finally { setLoadingPmb(false) }
     }
     fetchPmb()
@@ -261,7 +267,7 @@ export default function KontrolPPNPage() {
   const penjualanRows = useMemo((): PenjualanRow[] => {
     const map: Record<string, { nb_badan: number; ppn_badan: number; nb_bendahara: number; ppn_bendahara: number }> = {}
     for (const t of transaksi) {
-      const masa = t.masa ?? 'Tidak Diketahui'
+      const masa = normalizeMasa(t.masa ?? 'Tidak Diketahui')
       if (!map[masa]) map[masa] = { nb_badan: 0, ppn_badan: 0, nb_bendahara: 0, ppn_bendahara: 0 }
       const nb  = t.total_nilai_transaksi ?? 0
       const ppn = t.has_ppn ? nb * PPN_RATE : 0
@@ -294,7 +300,7 @@ export default function KontrolPPNPage() {
   const pembelianRows = useMemo((): PembelianRow[] => {
     const map: Record<string, { nb_normal: number; ppn_normal: number; nb_lainnya: number; ppn_lainnya: number }> = {}
     for (const p of pembelian) {
-      const masa = p.masa ?? 'Tidak Diketahui'
+      const masa = normalizeMasa(p.masa ?? 'Tidak Diketahui')
       if (!map[masa]) map[masa] = { nb_normal: 0, ppn_normal: 0, nb_lainnya: 0, ppn_lainnya: 0 }
       const isNormal = !p.keterangan || p.keterangan.toLowerCase() === 'normal'
       if (isNormal) {
@@ -324,25 +330,28 @@ export default function KontrolPPNPage() {
 
   // ── Filters ──────────────────────────────────────────────────────────────
   const filteredPembelian = useMemo(() => pembelianRows.filter(r => {
-    if (filterMasa && r.masa !== filterMasa) return false
-    if (search && !r.masa.toLowerCase().includes(search.toLowerCase())) return false
+    const rowMasa = normalizeMasa(r.masa)
+    if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
+    if (search && !rowMasa.toLowerCase().includes(search.toLowerCase())) return false
     return true
   }), [pembelianRows, filterMasa, search])
 
   const filteredPenjualan = useMemo(() => penjualanRows.filter(r => {
-    if (filterMasa && r.masa !== filterMasa) return false
-    if (search && !r.masa.toLowerCase().includes(search.toLowerCase())) return false
+    const rowMasa = normalizeMasa(r.masa)
+    if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
+    if (search && !rowMasa.toLowerCase().includes(search.toLowerCase())) return false
     return true
   }), [penjualanRows, filterMasa, search])
 
   const filtered = useMemo(() => data.filter(row => {
+    const rowMasa = normalizeMasa(row.masa)
     if (search) {
       const q = search.toLowerCase()
-      const hit = [row.masa, row.ntpn_surat_ket_pbk, row.status_lapor]
+      const hit = [rowMasa, row.ntpn_surat_ket_pbk, row.status_lapor]
         .filter(Boolean).some(v => v?.toLowerCase().includes(q))
       if (!hit) return false
     }
-    if (filterMasa && row.masa !== filterMasa) return false
+    if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
     return true
   }), [data, search, filterMasa])
 
@@ -359,25 +368,157 @@ export default function KontrolPPNPage() {
   const totalPPNTerutang    = totalPPN - totalPM - parseNumber(perhitunganForm.kompensasi)
   const ppnKurangBayarFinal = totalPPNTerutang - parseNumber(perhitunganForm.ppn_kurang_lebih) - parseNumber(perhitunganForm.ppn_dibayarkan)
 
-  const handleExportCSV = () => {
-    const rows = filtered.map(r => [
-      r.masa,
-      r.penyerahan_lainnya_nilai_bruto, r.penyerahan_lainnya_ppn_terutang,
-      r.penyerahan_pemungut_nilai_bruto, r.penyerahan_pemungut_ppn_terutang,
-      r.total_penghasilan, r.total_sd_bulan_ini, r.total_ppn_terutang,
-      r.pmb_dpp_nilai_lain_nilai_bruto, r.pmb_dpp_nilai_lain_ppn_terutang,
-      r.pmb_skp_luar_negeri_nilai_bruto, r.pmb_skp_luar_negeri_ppn_terutang,
-      r.total_pmb_penghasilan, r.total_pmb_sd_bulan_ini, r.total_pmb_ppn_terutang,
-      r.kompensasi_kelebihan_pm, r.total_ppn_terutang_final,
-      r.ppn_kurang_lebih_bayar_spt, r.ppn_diperhitungkan, r.ppn_kurang_bayar,
-      r.ntpn_surat_ket_pbk || '-', r.tgl_bayar || '-', r.tgl_lapor || '-', r.tgl_pengembalian || '-',
-    ].join(','))
-    const header = 'Masa,Penyerahan Lainnya NB,PPN Terutang,Pemungut NB,PPN Terutang,Total Penghasilan,s.d Bulan Ini,Total PPN,PMB DPP NB,PPN Terutang,SKP LN NB,PPN Terutang,Total PMB,PMB sd Bulan,PMB PPN,Kompensasi,Total PPN Final,Kurang Lebih SPT,Diperhitungkan,Kurang Bayar,NTPN,Tgl Bayar,Tgl Lapor,Tgl Pengembalian'
-    const csv = [header, ...rows].join('\n')
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
-    a.download = 'kontrol_ppn.csv'
-    a.click()
+  // ── Simpan (in-memory) ────────────────────────────────────────────────────
+  const handleSimpan = () => {
+    setSavedData({
+      ...perhitunganForm,
+      totalPenyerahan,
+      totalPPN,
+      totalPM,
+      totalPPNTerutang,
+      ppnKurangBayarFinal,
+      savedAt: new Date().toLocaleString('id-ID'),
+    })
+    setSaveSuccess(true)
+    setTimeout(() => setSaveSuccess(false), 2500)
+  }
+
+  // ── Download PDF (print dialog) ───────────────────────────────────────────
+  const handleDownloadPDF = () => {
+    const d = savedData
+    if (!d) return
+
+    const rp = (n: number) => 'Rp ' + Number(n || 0).toLocaleString('id-ID')
+
+    const html = `<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8"/>
+<title>Bukti Perhitungan Akhir PPN</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #fff; color: #1e293b; padding: 48px; max-width: 720px; margin: auto; }
+  @media print { body { padding: 32px; } }
+
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; border-bottom: 3px solid #1e40af; padding-bottom: 18px; }
+  .header-title { }
+  .header-title h1 { font-size: 20px; font-weight: 800; color: #1e40af; letter-spacing: -0.3px; }
+  .header-title p { font-size: 12px; color: #64748b; margin-top: 4px; }
+  .header-badge { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 14px; text-align: right; }
+  .header-badge .badge-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #3b82f6; font-weight: 700; }
+  .header-badge .badge-val { font-size: 13px; font-weight: 700; color: #1e40af; margin-top: 2px; }
+
+  .section { margin-bottom: 22px; }
+  .section-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 1px solid #f1f5f9; }
+
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #f8fafc; }
+  .row:last-child { border-bottom: none; }
+  .row .label { font-size: 13px; color: #475569; }
+  .row .value { font-size: 13px; font-weight: 700; color: #0f172a; text-align: right; }
+
+  .highlight-box { background: #fef2f2; border: 1.5px solid #fecaca; border-radius: 10px; padding: 14px 18px; margin: 18px 0; }
+  .highlight-box .row { border-bottom: none; padding: 4px 0; }
+  .highlight-box .label { font-size: 14px; font-weight: 700; color: #dc2626; }
+  .highlight-box .value { font-size: 18px; font-weight: 800; color: #dc2626; }
+
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 22px; }
+  .scard { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; }
+  .scard .s-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; font-weight: 700; margin-bottom: 5px; }
+  .scard .s-val { font-size: 13px; font-weight: 800; color: #0f172a; }
+
+  .footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; }
+  .footer p { font-size: 10px; color: #94a3b8; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-title">
+    <h1>Bukti Perhitungan Akhir PPN</h1>
+    <p>Dokumen ini digenerate secara otomatis dari sistem</p>
+  </div>
+  <div class="header-badge">
+    <div class="badge-label">Disimpan pada</div>
+    <div class="badge-val">${d.savedAt}</div>
+  </div>
+</div>
+
+<div class="summary-grid">
+  <div class="scard">
+    <div class="s-label">Total Penjualan</div>
+    <div class="s-val">${rp(d.totalPenyerahan)}</div>
+  </div>
+  <div class="scard">
+    <div class="s-label">PPN Terutang (PK)</div>
+    <div class="s-val">${rp(d.totalPPN)}</div>
+  </div>
+  <div class="scard">
+    <div class="s-label">Pajak Masukan (PM)</div>
+    <div class="s-val">${rp(d.totalPM)}</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Perhitungan Akhir</div>
+  <div class="row">
+    <span class="label">Kompensasi kelebihan pajak masukan</span>
+    <span class="value">${rp(parseNumber(d.kompensasi))}</span>
+  </div>
+  <div class="row">
+    <span class="label">Total PPN Terutang</span>
+    <span class="value">${rp(d.totalPPNTerutang)}</span>
+  </div>
+  <div class="row">
+    <span class="label">PPN kurang/lebih bayar SPT yang dibetulkan</span>
+    <span class="value">${rp(parseNumber(d.ppn_kurang_lebih))}</span>
+  </div>
+  <div class="row">
+    <span class="label">PPN dibayarkan</span>
+    <span class="value">${rp(parseNumber(d.ppn_dibayarkan))}</span>
+  </div>
+</div>
+
+<div class="highlight-box">
+  <div class="row">
+    <span class="label">PPN Kurang Bayar</span>
+    <span class="value">${rp(d.ppnKurangBayarFinal)}</span>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Data Pembayaran</div>
+  <div class="row">
+    <span class="label">NTPN / Surat Ket. PBK</span>
+    <span class="value">${d.ntpn || '-'}</span>
+  </div>
+  <div class="row">
+    <span class="label">Tanggal Bayar</span>
+    <span class="value">${d.tgl_bayar || '-'}</span>
+  </div>
+  <div class="row">
+    <span class="label">Tanggal Lapor</span>
+    <span class="value">${d.tgl_lapor || '-'}</span>
+  </div>
+  <div class="row">
+    <span class="label">Tanggal Pengembalian</span>
+    <span class="value">${d.tgl_pengembalian || '-'}</span>
+  </div>
+</div>
+
+<div class="footer">
+  <p>Dicetak pada: ${new Date().toLocaleString('id-ID')}</p>
+  <p>Dokumen ini bersifat informatif dan bukan pengganti dokumen resmi perpajakan.</p>
+</div>
+
+</body>
+</html>`
+
+    const w = window.open('', '_blank', 'width=800,height=900')
+    if (!w) return
+    w.document.write(html)
+    w.document.close()
+    w.focus()
+    setTimeout(() => { w.print() }, 600)
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -473,6 +614,56 @@ export default function KontrolPPNPage() {
                               box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
 
         .col-divider { border-left: 2px solid #e2e8f0; }
+
+        /* Action buttons area */
+        .action-bar {
+          display: flex; gap: 0.75rem; margin-top: 0.75rem;
+          padding-top: 1.1rem; border-top: 1px solid #e2e8f0;
+          align-items: center; flex-wrap: wrap;
+        }
+        .btn-save {
+          display: flex; align-items: center; gap: 7px;
+          padding: 9px 22px; border-radius: 9px;
+          background: #2563eb; color: #fff;
+          border: none; cursor: pointer;
+          font-weight: 700; font-size: 0.82rem;
+          box-shadow: 0 2px 10px rgba(37,99,235,.28);
+          transition: background .15s, transform .1s;
+        }
+        .btn-save:hover { background: #1d4ed8; transform: translateY(-1px); }
+        .btn-save:active { transform: translateY(0); }
+
+        .btn-pdf {
+          display: flex; align-items: center; gap: 7px;
+          padding: 9px 22px; border-radius: 9px;
+          border: none; cursor: pointer;
+          font-weight: 700; font-size: 0.82rem;
+          transition: background .15s, transform .1s;
+        }
+        .btn-pdf.active {
+          background: #0f172a; color: #fff;
+          box-shadow: 0 2px 8px rgba(15,23,42,.2);
+        }
+        .btn-pdf.active:hover { background: #1e293b; transform: translateY(-1px); }
+        .btn-pdf.inactive {
+          background: #f1f5f9; color: #94a3b8;
+          cursor: not-allowed;
+        }
+
+        .toast-success {
+          display: flex; align-items: center; gap: 8px;
+          margin-top: 10px; padding: 9px 14px; border-radius: 8px;
+          background: #dcfce7; color: #166534;
+          font-size: 0.8rem; font-weight: 600;
+          border: 1px solid #bbf7d0;
+          animation: fadeIn .2s ease;
+        }
+        .saved-stamp {
+          margin-top: 8px; padding: 8px 13px; border-radius: 7px;
+          background: #f0f9ff; color: #0369a1;
+          font-size: 0.74rem; border: 1px solid #bae6fd;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
 
       <div className="layout">
@@ -480,11 +671,7 @@ export default function KontrolPPNPage() {
 
         <header className="topbar">
           <div className="page-title">Kontrol PPN</div>
-          <div className="topbar-right">
-            <button className="btn" onClick={handleExportCSV}>
-              <Download size={13} /> Export CSV
-            </button>
-          </div>
+          <div className="topbar-right" />
         </header>
 
         <main className="main">
@@ -611,7 +798,7 @@ export default function KontrolPPNPage() {
                         </tr>
                       ) : filteredPenjualan.map(row => (
                         <tr key={row.masa}>
-                          <td style={{ fontWeight: 600 }}>{row.masa}</td>
+                          <td style={{ fontWeight: 600 }}>{normalizeMasa(row.masa)}</td>
                           <td className="right">{row.nb_badan       ? fmt(row.nb_badan)       : '—'}</td>
                           <td className="right">{row.ppn_badan      ? fmt(row.ppn_badan)      : '—'}</td>
                           <td className="right col-divider">{row.nb_bendahara  ? fmt(row.nb_bendahara)  : '—'}</td>
@@ -696,7 +883,7 @@ export default function KontrolPPNPage() {
                         </tr>
                       ) : filteredPembelian.map(row => (
                         <tr key={row.masa}>
-                          <td style={{ fontWeight: 600 }}>{row.masa}</td>
+                          <td style={{ fontWeight: 600 }}>{normalizeMasa(row.masa)}</td>
                           <td className="right">{row.nb_normal    ? fmt(row.nb_normal)    : '—'}</td>
                           <td className="right">{row.ppn_normal   ? fmt(row.ppn_normal)   : '—'}</td>
                           <td className="right col-divider">{row.nb_lainnya  ? fmt(row.nb_lainnya)  : '—'}</td>
@@ -836,6 +1023,36 @@ export default function KontrolPPNPage() {
                           onChange={e => setPerhitunganForm(prev => ({ ...prev, ntpn: e.target.value }))}
                         />
                       </div>
+
+                      {/* ── ACTION BUTTONS ── */}
+                      <div className="action-bar">
+                        <button className="btn-save" onClick={handleSimpan}>
+                          <Save size={14} />
+                          Simpan
+                        </button>
+                        <button
+                          className={`btn-pdf ${savedData ? 'active' : 'inactive'}`}
+                          onClick={handleDownloadPDF}
+                          disabled={!savedData}
+                        >
+                          <FileDown size={14} />
+                          Download PDF
+                        </button>
+                      </div>
+
+                      {/* Toast sukses */}
+                      {saveSuccess && (
+                        <div className="toast-success">
+                          ✅ Data berhasil disimpan! Tombol Download PDF sekarang aktif.
+                        </div>
+                      )}
+
+                      {/* Timestamp terakhir simpan */}
+                      {savedData && !saveSuccess && (
+                        <div className="saved-stamp">
+                          🕐 Terakhir disimpan: {savedData.savedAt}
+                        </div>
+                      )}
 
                     </div>
                   )}

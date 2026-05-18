@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/context/AuthContext'
 import { supabaseClient } from '@/lib/supabaseClient'
+import { MASA_OPTIONS, normalizeMasa } from '@/lib/masa'
 import { ChevronRight, Search, SlidersHorizontal, X, ChevronDown, Download } from 'lucide-react'
 import Sidebar from '@/components/Sidebar'
 
@@ -29,11 +30,6 @@ interface TransaksiRow {
   jasa_rows: { nama: string; harga: string }[]
   barang_rows: { nama: string; harga: string }[]
 }
-
-const MASA_OPTIONS = [
-  'January','February','March','April','May','June',
-  'July','August','September','October','November','December',
-]
 
 const STATUS_BUPOT_OPTIONS = [
   { value: 'terbit',       label: 'Terbit' },
@@ -124,13 +120,14 @@ export default function KontrolPPhPage() {
   const filtered = useMemo(() => {
     return data.filter(row => {
       const dpp = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
+      const rowMasa = normalizeMasa(row.masa)
       if (search) {
         const q = search.toLowerCase()
-        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, row.masa, row.kode_jasa, row.jenis_jasa]
+        const match = [row.pembeli, row.nomor_transaksi, row.npwp_pembeli, rowMasa, row.kode_jasa, row.jenis_jasa]
           .some(v => v?.toLowerCase().includes(q))
         if (!match) return false
       }
-      if (filterMasa && row.masa !== filterMasa) return false
+      if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
       if (filterTahun && row.tanggal) {
         if (new Date(row.tanggal).getFullYear().toString() !== filterTahun) return false
       }
@@ -179,7 +176,7 @@ export default function KontrolPPhPage() {
       const dpp   = row.total_nilai_transaksi || (row.total_jasa + row.total_barang)
       const pajak = Math.round(row.total_jasa * 0.02)
       const status = row.status_bupot === 'terbit' ? 'Terbit' : row.status_bupot === 'proses' ? 'Proses' : 'Tidak Terbit'
-      return [i+1, row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-', row.masa || '-', row.nomor_transaksi || '-', row.pembeli || '-', row.npwp_pembeli || '-', row.kode_jasa || '-', row.jenis_jasa || '-', dpp, '2%', pajak, status].join(',')
+      return [i+1, row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-', normalizeMasa(row.masa) || '-', row.nomor_transaksi || '-', row.pembeli || '-', row.npwp_pembeli || '-', row.kode_jasa || '-', row.jenis_jasa || '-', dpp, '2%', pajak, status].join(',')
     })
     const csv = [headers.join(','), ...rows].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
@@ -552,7 +549,7 @@ export default function KontrolPPhPage() {
                           <tr key={row.id}>
                             <td className="muted">{startIndex + i + 1}</td>
                             <td>{row.tanggal ? new Date(row.tanggal).toLocaleDateString('id-ID') : '-'}</td>
-                            <td>{row.masa || '-'}</td>
+                            <td>{normalizeMasa(row.masa) || '-'}</td>
                             <td className="mono">{row.nomor_transaksi || '-'}</td>
                             <td className="left">{row.pembeli || '-'}</td>
                             <td className="muted">{row.npwp_pembeli || '-'}</td>
