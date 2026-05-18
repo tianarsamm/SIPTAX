@@ -18,7 +18,7 @@ const MASA_MAP: Record<string, string> = {
   'desember': 'Desember', 'des': 'Desember', '12': 'Desember',
 }
 
-export const normalizeMasa = (value?: string) => {
+export const normalizeMasa = (value?: string | null) => {
   if (!value) return ''
   const key = value.trim().toLowerCase()
   return MASA_MAP[key] ?? value.trim()
