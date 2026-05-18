@@ -384,7 +384,7 @@ export default function DashboardPage() {
                 icon={<Building2 size={24} color="#10b981" />}
                 iconBg="green" trend={loading ? "Loading..." : "Psl 22/23 dipotong"} trendUp
               />
-              <StatCard
+              {/* <StatCard
                 title="Transaksi Pending" value={loading ? '---' : stats.transaksiBelumSelesai.toString()}
                 icon={<Clock size={24} color="#f59e0b" />}
                 iconBg="amber"   trend={loading ? "Loading..." : "Menunggu konfirmasi"}  trendUp={false}
@@ -398,7 +398,7 @@ export default function DashboardPage() {
                 title="Nilai Pembelian"   value={loading ? '---' : `Rp ${(stats.totalPembelian / 1_000_000_000).toFixed(2)}B`}
                 icon={<ShoppingCart size={24} color="#ef4444" />}
                 iconBg="red"   trend={loading ? "Loading..." : "Transaksi masuk"}  trendUp={false}
-              />
+              /> */}
             </div>
 
             {/* CTA */}
