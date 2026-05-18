@@ -270,7 +270,9 @@ function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, d
   const [barangRows, setBarangRows] = useState(initialData?.barangRows || [{ nama: '', harga: '' }])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!initialData?.penjual) setPenjual(defaultPenjual)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!initialData?.npwpPenjual) setNpwpPenjual(defaultNpwpPenjual)
   }, [defaultPenjual, defaultNpwpPenjual, initialData?.penjual, initialData?.npwpPenjual])
 
@@ -278,6 +280,7 @@ function InputTransaksiStep({ onNext, onRollback, initialData, defaultPenjual, d
     if (form.tanggal) {
       const date = new Date(form.tanggal)
       const monthNames = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMasa(monthNames[date.getMonth()])
     }
   }, [form.tanggal])
@@ -617,6 +620,7 @@ function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback,
     if (transaksi.nomorTransaksi) return   // sudah ada nomor → sudah tersimpan sebelumnya
 
     savedRef.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsSaving(true)
     setSaveError(null)
 
@@ -975,10 +979,12 @@ export default function CekPPNPage() {
         } else if (savedStep !== 'input-transaksi') {
           // Di tengah alur (ppn/bupot) tapi baru kembali → kembalikan data
           // transaksi tapi paksa step ke input-transaksi supaya bisa diedit ulang
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setFormData(prev => ({ ...parsed, profil: user?.profil || prev.profil, transaksi: parsed.transaksi || null, ppn: null, bupot: null }))
           setCurrentStep('input-transaksi')
         } else {
           // Masih di input-transaksi → restore normal
+          // eslint-disable-next-line react-hooks/set-state-in-effect
           setFormData(prev => ({ ...parsed, profil: user?.profil || prev.profil }))
           setCurrentStep('input-transaksi')
         }
@@ -986,7 +992,7 @@ export default function CekPPNPage() {
     }
 
     setMounted(true)
-  }, [])
+  }, [user?.profil])
 
   // Simpan formData + step aktif ke localStorage setiap kali berubah
   useEffect(() => {

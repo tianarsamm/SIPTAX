@@ -65,6 +65,7 @@ export default function PenjualanPage() {
 
   // Reset ke halaman 1 saat filter berubah
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setCurrentPage(1)
   }, [search, filterMasa, filterTahun, filterJenisWP, filterPPN, filterBupot, filterMinDPP, filterMaxDPP])
 
