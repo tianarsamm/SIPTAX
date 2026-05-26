@@ -37,7 +37,6 @@ interface PPNRow {
   tgl_bayar?: string
   tgl_lapor?: string
   tgl_pengembalian?: string
-  status_lapor?: string
 }
 
 interface TransaksiRow {
@@ -53,6 +52,7 @@ interface PembelianPPNRow {
   id: string
   masa: string | null
   tanggal_faktur: string | null
+  tahun: number | null
   dpp: number
   ppn: number
   keterangan: string | null
@@ -101,6 +101,29 @@ interface SavedPerhitungan extends PerhitunganFormState {
 
 type TabKey = 'penjualan' | 'pembelian' | 'perhitungan'
 
+const EMPTY_PERHITUNGAN_FORM: PerhitunganFormState = {
+  kompensasi: '0',
+  ppn_kurang_lebih: '0',
+  ppn_dibayarkan: '0',
+  ntpn: '',
+  tgl_bayar: '',
+  tgl_lapor: '',
+  tgl_pengembalian: '',
+}
+
+const KONTROL_PPN_COLUMNS = `
+  id, masa, tanggal,
+  penyerahan_lainnya_nilai_bruto, penyerahan_lainnya_ppn_terutang,
+  penyerahan_pemungut_nilai_bruto, penyerahan_pemungut_ppn_terutang,
+  total_penghasilan, total_sd_bulan_ini, total_ppn_terutang,
+  pmb_dpp_nilai_lain_nilai_bruto, pmb_dpp_nilai_lain_ppn_terutang,
+  pmb_skp_luar_negeri_nilai_bruto, pmb_skp_luar_negeri_ppn_terutang,
+  total_pmb_penghasilan, total_pmb_sd_bulan_ini, total_pmb_ppn_terutang,
+  kompensasi_kelebihan_pm, total_ppn_terutang_final,
+  ppn_kurang_lebih_bayar_spt, ppn_diperhitungkan, ppn_kurang_bayar,
+  ntpn_surat_ket_pbk, tgl_bayar, tgl_lapor, tgl_pengembalian
+`
+
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'penjualan',   label: 'Penjualan' },
   { key: 'pembelian',   label: 'Pembelian' },
@@ -113,6 +136,26 @@ const isBendahara = (jenis_wp: string | null): boolean => {
 }
 
 const PPN_RATE = 0.11
+const CURRENT_YEAR = new Date().getFullYear().toString()
+const getYear = (date?: string | null) => date?.slice(0, 4) ?? ''
+const getCurrentLocalDate = () => {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+const getCurrentMasa = () => MASA_ORDER[new Date().getMonth()]
+
+// ── localStorage helpers ─────────────────────────────────────────────────────
+const LS_KEY_MASA  = 'kppn_filterMasa'
+const LS_KEY_TAHUN = 'kppn_filterTahun'
+
+const lsGet = (key: string, fallback: string): string => {
+  if (typeof window === 'undefined') return fallback
+  try { return localStorage.getItem(key) ?? fallback } catch { return fallback }
+}
+const lsSet = (key: string, value: string) => {
+  if (typeof window === 'undefined') return
+  try { localStorage.setItem(key, value) } catch { /* noop */ }
+}
 
 export default function KontrolPPNPage() {
   const { user, loading: authLoading } = useAuth()
@@ -124,24 +167,37 @@ export default function KontrolPPNPage() {
   const [pembelian, setPembelian]   = useState<PembelianPPNRow[]>([])
   const [loadingPmb, setLoadingPmb] = useState(true)
 
-  const [activeTab, setActiveTab]     = useState<TabKey>('penjualan')
-  const [search, setSearch]           = useState('')
-  const [filterMasa, setFilterMasa]   = useState('')
-  const [filterOpen, setFilterOpen]   = useState(false)
+  const [activeTab, setActiveTab] = useState<TabKey>('penjualan')
+  const [search, setSearch]       = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
 
-  const [perhitunganForm, setPerhitunganForm] = useState<PerhitunganFormState>({
-    kompensasi: '0',
-    ppn_kurang_lebih: '0',
-    ppn_dibayarkan: '0',
-    ntpn: '',
-    tgl_bayar: '',
-    tgl_lapor: '',
-    tgl_pengembalian: '',
-  })
+  const isPerhitunganTab = activeTab === 'perhitungan'
+
+  useEffect(() => {
+    if (isPerhitunganTab) setFilterOpen(false)
+  }, [isPerhitunganTab])
+
+  // ── Filter state — persisted to localStorage ────────────────────────────
+  const [filterMasa, setFilterMasaState]   = useState<string>(() => lsGet(LS_KEY_MASA, ''))
+  const [filterTahun, setFilterTahunState] = useState<string>(() => lsGet(LS_KEY_TAHUN, CURRENT_YEAR))
+
+  const setFilterMasa = (v: string) => {
+    setFilterMasaState(v)
+    lsSet(LS_KEY_MASA, v)
+  }
+  const setFilterTahun = (v: string) => {
+    setFilterTahunState(v)
+    lsSet(LS_KEY_TAHUN, v)
+  }
+
+  const [perhitunganForm, setPerhitunganForm] = useState<PerhitunganFormState>(EMPTY_PERHITUNGAN_FORM)
 
   // ── State untuk simpan & PDF ─────────────────────────────────────────────
-  const [savedData, setSavedData]       = useState<SavedPerhitungan | null>(null)
-  const [saveSuccess, setSaveSuccess]   = useState(false)
+  const [savedData, setSavedData]     = useState<SavedPerhitungan | null>(null)
+  const [saveSuccess, setSaveSuccess] = useState(false)
+  const [saveError, setSaveError]     = useState<string | null>(null)
+  const [saving, setSaving]           = useState(false)
+  const [isFormDirty, setIsFormDirty] = useState(false)
 
   const parseNumber = (value: string) => {
     if (!value) return 0
@@ -159,23 +215,28 @@ export default function KontrolPPNPage() {
   const handleCurrencyInput = (e: React.ChangeEvent<HTMLInputElement>, field: keyof PerhitunganFormState) => {
     const input = e.target.value
     const cleanedNum = parseNumber(input)
-    setPerhitunganForm(prev => ({ ...prev, [field]: cleanedNum.toString() }))
+    updatePerhitunganForm({ [field]: cleanedNum.toString() })
   }
 
   const handleCurrencyBlur = (e: React.FocusEvent<HTMLInputElement>, field: keyof PerhitunganFormState) => {
     const num = parseNumber(e.target.value)
-    setPerhitunganForm(prev => ({ ...prev, [field]: num.toString() }))
+    updatePerhitunganForm({ [field]: num.toString() })
   }
+
+  const updatePerhitunganForm = (fields: Partial<PerhitunganFormState>) => {
+    setPerhitunganForm(prev => ({ ...prev, ...fields }))
+    setIsFormDirty(true)
+    setSaveError(null)
+  }
+
+  const toNumber = (value: number | string | null | undefined) => Number(value) || 0
 
   const logFetchError = (context: string, error: unknown) => {
     if (error instanceof Error) {
       console.warn(context, error.message)
     } else if (error && typeof error === 'object') {
-      try {
-        console.warn(context, JSON.stringify(error))
-      } catch {
-        console.warn(context, error)
-      }
+      try { console.warn(context, JSON.stringify(error)) }
+      catch { console.warn(context, error) }
     } else {
       console.warn(context, error)
     }
@@ -190,21 +251,9 @@ export default function KontrolPPNPage() {
       try {
         const { data: rows, error } = await supabaseClient
           .from('kontrol_ppn')
-          .select(`
-            id, masa, tanggal,
-            penyerahan_lainnya_nilai_bruto, penyerahan_lainnya_ppn_terutang,
-            penyerahan_pemungut_nilai_bruto, penyerahan_pemungut_ppn_terutang,
-            total_penghasilan, total_sd_bulan_ini, total_ppn_terutang,
-            pmb_dpp_nilai_lain_nilai_bruto, pmb_dpp_nilai_lain_ppn_terutang,
-            pmb_skp_luar_negeri_nilai_bruto, pmb_skp_luar_negeri_ppn_terutang,
-            total_pmb_penghasilan, total_pmb_sd_bulan_ini, total_pmb_ppn_terutang,
-            kompensasi_kelebihan_pm, total_ppn_terutang_final,
-            ppn_kurang_lebih_bayar_spt, ppn_diperhitungkan, ppn_kurang_bayar,
-            ntpn_surat_ket_pbk, tgl_bayar, tgl_lapor, tgl_pengembalian, status_lapor
-          `)
+          .select(KONTROL_PPN_COLUMNS)
           .eq('user_id', user.id)
-          .order('tanggal', { ascending: true })
-          .range(0, 49)
+          .order('tanggal', { ascending: false })
         if (error) { logFetchError('kontrol_ppn fetch error', error); setData([]) }
         else setData(rows || [])
       } catch (e) { logFetchError('kontrol_ppn exception', e); setData([]) }
@@ -243,7 +292,7 @@ export default function KontrolPPNPage() {
       try {
         const { data: rows, error } = await supabaseClient
           .from('pembelian_ppn')
-          .select('id, masa, tanggal_faktur, dpp, ppn, keterangan')
+          .select('id, masa, tanggal_faktur, tahun, dpp, ppn, keterangan')
           .eq('user_id', user.id)
           .order('tanggal_faktur', { ascending: true })
           .range(0, 49)
@@ -251,6 +300,7 @@ export default function KontrolPPNPage() {
         else {
           const normalized = (rows || []).map((r: Record<string, unknown>) => ({
             ...r,
+            tahun: typeof r.tahun === 'string' ? parseInt(r.tahun as string, 10) || null : (r.tahun as number) ?? null,
             dpp: typeof r.dpp === 'string' ? parseFloat(r.dpp as string) || 0 : (r.dpp as number) ?? 0,
             ppn: typeof r.ppn === 'string' ? parseFloat(r.ppn as string) || 0 : (r.ppn as number) ?? 0,
             keterangan: (r.keterangan as string) ?? 'Normal',
@@ -267,6 +317,7 @@ export default function KontrolPPNPage() {
   const penjualanRows = useMemo((): PenjualanRow[] => {
     const map: Record<string, { nb_badan: number; ppn_badan: number; nb_bendahara: number; ppn_bendahara: number }> = {}
     for (const t of transaksi) {
+      if (filterTahun && getYear(t.tanggal) !== filterTahun) continue
       const masa = normalizeMasa(t.masa ?? 'Tidak Diketahui')
       if (!map[masa]) map[masa] = { nb_badan: 0, ppn_badan: 0, nb_bendahara: 0, ppn_bendahara: 0 }
       const nb  = t.total_nilai_transaksi ?? 0
@@ -294,12 +345,14 @@ export default function KontrolPPNPage() {
     let cum = 0
     for (const r of rows) { cum += r.penghasilan; r.sd_bulan_ini = cum }
     return rows
-  }, [transaksi])
+  }, [transaksi, filterTahun])
 
   // ── Aggregate: pembelian ─────────────────────────────────────────────────
   const pembelianRows = useMemo((): PembelianRow[] => {
     const map: Record<string, { nb_normal: number; ppn_normal: number; nb_lainnya: number; ppn_lainnya: number }> = {}
     for (const p of pembelian) {
+      const tahun = p.tahun?.toString() || getYear(p.tanggal_faktur)
+      if (filterTahun && tahun !== filterTahun) continue
       const masa = normalizeMasa(p.masa ?? 'Tidak Diketahui')
       if (!map[masa]) map[masa] = { nb_normal: 0, ppn_normal: 0, nb_lainnya: 0, ppn_lainnya: 0 }
       const isNormal = !p.keterangan || p.keterangan.toLowerCase() === 'normal'
@@ -326,9 +379,37 @@ export default function KontrolPPNPage() {
     let cum = 0
     for (const r of rows) { cum += r.penghasilan; r.sd_bulan_ini = cum }
     return rows
-  }, [pembelian])
+  }, [pembelian, filterTahun])
+
+  const totalPenyerahanAll = useMemo(() =>
+    transaksi.reduce((sum, t) => sum + (t.total_nilai_transaksi ?? 0), 0),
+    [transaksi],
+  )
+
+  const totalPPNAll = useMemo(() =>
+    transaksi.reduce((sum, t) => sum + ((t.has_ppn ? (t.total_nilai_transaksi ?? 0) * PPN_RATE : 0)), 0),
+    [transaksi],
+  )
+
+  const totalPMAll = useMemo(() =>
+    pembelian.reduce((sum, p) => sum + (p.ppn ?? 0), 0),
+    [pembelian],
+  )
+
+  const totalKurangBayarAll = useMemo(() =>
+    data.reduce((sum, row) => sum + ((row.ppn_kurang_bayar as number) || 0), 0),
+    [data],
+  )
 
   // ── Filters ──────────────────────────────────────────────────────────────
+  const tahunOptions = useMemo(() => {
+    const years = new Set<string>([CURRENT_YEAR])
+    transaksi.forEach(row => years.add(getYear(row.tanggal)))
+    pembelian.forEach(row => years.add(row.tahun?.toString() || getYear(row.tanggal_faktur)))
+    data.forEach(row => years.add(getYear(row.tanggal)))
+    return [...years].filter(Boolean).sort((a, b) => Number(b) - Number(a))
+  }, [transaksi, pembelian, data])
+
   const filteredPembelian = useMemo(() => pembelianRows.filter(r => {
     const rowMasa = normalizeMasa(r.masa)
     if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
@@ -347,40 +428,174 @@ export default function KontrolPPNPage() {
     const rowMasa = normalizeMasa(row.masa)
     if (search) {
       const q = search.toLowerCase()
-      const hit = [rowMasa, row.ntpn_surat_ket_pbk, row.status_lapor]
+      const hit = [rowMasa, row.ntpn_surat_ket_pbk]
         .filter(Boolean).some(v => v?.toLowerCase().includes(q))
       if (!hit) return false
     }
     if (filterMasa && rowMasa !== normalizeMasa(filterMasa)) return false
+    if (filterTahun && getYear(row.tanggal) !== filterTahun) return false
     return true
-  }), [data, search, filterMasa])
+  }), [data, search, filterMasa, filterTahun])
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── activeSavedRow: cari dari `data` berdasarkan masa + tahun ────────────
+  // Ini adalah sumber kebenaran tunggal untuk menentukan apakah record sudah
+  // ada di DB atau belum, sehingga tidak bergantung pada timing state.
+  const activeSavedRow = useMemo(() => {
+    if (isPerhitunganTab) {
+      const currentMasa = normalizeMasa(getCurrentMasa())
+      return data.find(
+        row =>
+          normalizeMasa(row.masa) === currentMasa &&
+          getYear(row.tanggal) === CURRENT_YEAR,
+      ) ?? null
+    }
+    if (!filterMasa || !filterTahun) return null
+    const normalizedMasa = normalizeMasa(filterMasa)
+    return data.find(
+      row =>
+        normalizeMasa(row.masa) === normalizedMasa &&
+        getYear(row.tanggal) === filterTahun,
+    ) ?? null
+  }, [data, filterMasa, filterTahun, isPerhitunganTab])
+
+  // ── Sync form dari DB saat activeSavedRow berubah ────────────────────────
+  useEffect(() => {
+    if (loadingPPN) return
+
+    if (!activeSavedRow) {
+      setPerhitunganForm(EMPTY_PERHITUNGAN_FORM)
+      setSavedData(null)
+      setIsFormDirty(false)
+      return
+    }
+
+    const loadedForm: PerhitunganFormState = {
+      kompensasi:       toNumber(activeSavedRow.kompensasi_kelebihan_pm).toString(),
+      ppn_kurang_lebih: toNumber(activeSavedRow.ppn_kurang_lebih_bayar_spt).toString(),
+      ppn_dibayarkan:   toNumber(activeSavedRow.ppn_diperhitungkan).toString(),
+      ntpn:             activeSavedRow.ntpn_surat_ket_pbk ?? '',
+      tgl_bayar:        activeSavedRow.tgl_bayar ?? '',
+      tgl_lapor:        activeSavedRow.tgl_lapor ?? '',
+      tgl_pengembalian: activeSavedRow.tgl_pengembalian ?? '',
+    }
+
+    setPerhitunganForm(loadedForm)
+    setSavedData({
+      ...loadedForm,
+      totalPenyerahan:   toNumber(activeSavedRow.total_penghasilan),
+      totalPPN:          toNumber(activeSavedRow.total_ppn_terutang),
+      totalPM:           toNumber(activeSavedRow.total_pmb_ppn_terutang),
+      totalPPNTerutang:  toNumber(activeSavedRow.total_ppn_terutang_final),
+      ppnKurangBayarFinal: toNumber(activeSavedRow.ppn_kurang_bayar),
+      savedAt: new Date(`${activeSavedRow.tanggal}T00:00:00`).toLocaleDateString('id-ID'),
+    })
+    setIsFormDirty(false)
+  }, [activeSavedRow, loadingPPN])
+
   const fmt = (n: number) => Number(n || 0).toLocaleString('id-ID')
   const sumPPN  = (key: keyof PPNRow) => filtered.reduce((s, r) => s + ((r[key] as number) || 0), 0)
   const sumPenj = (key: keyof PenjualanRow) => filteredPenjualan.reduce((s, r) => s + ((r[key] as number) || 0), 0)
   const sumPmb  = (key: keyof PembelianRow) => filteredPembelian.reduce((s, r) => s + ((r[key] as number) || 0), 0)
 
-  const totalPenyerahan     = sumPenj('penghasilan')
-  const totalPPN            = sumPenj('total_ppn')
-  const totalPM             = sumPmb('total_ppn')
-  const totalKurangBayar    = sumPPN('ppn_kurang_bayar')
-  const totalPPNTerutang    = totalPPN - totalPM - parseNumber(perhitunganForm.kompensasi)
-  const ppnKurangBayarFinal = totalPPNTerutang - parseNumber(perhitunganForm.ppn_kurang_lebih) - parseNumber(perhitunganForm.ppn_dibayarkan)
+  const totalPenyerahan  = isPerhitunganTab ? totalPenyerahanAll : sumPenj('penghasilan')
+  const totalPPN         = isPerhitunganTab ? totalPPNAll : sumPenj('total_ppn')
+  const totalPM          = isPerhitunganTab ? totalPMAll : sumPmb('total_ppn')
+  const totalKurangBayar = isPerhitunganTab ? totalKurangBayarAll : sumPPN('ppn_kurang_bayar')
 
-  // ── Simpan (in-memory) ────────────────────────────────────────────────────
-  const handleSimpan = () => {
-    setSavedData({
-      ...perhitunganForm,
-      totalPenyerahan,
-      totalPPN,
-      totalPM,
-      totalPPNTerutang,
-      ppnKurangBayarFinal,
-      savedAt: new Date().toLocaleString('id-ID'),
-    })
-    setSaveSuccess(true)
-    setTimeout(() => setSaveSuccess(false), 2500)
+  const calculatedTotalPPNTerutang = totalPPN - totalPM - parseNumber(perhitunganForm.kompensasi)
+  const calculatedKurangBayarFinal = calculatedTotalPPNTerutang - parseNumber(perhitunganForm.ppn_kurang_lebih) - parseNumber(perhitunganForm.ppn_dibayarkan)
+
+  const totalPPNTerutang    = savedData && !isFormDirty ? savedData.totalPPNTerutang    : calculatedTotalPPNTerutang
+  const ppnKurangBayarFinal = savedData && !isFormDirty ? savedData.ppnKurangBayarFinal : calculatedKurangBayarFinal
+
+  // ── handleSimpan ─────────────────────────────────────────────────────────
+  const handleSimpan = async () => {
+    if (!user?.id) {
+      setSaveError('Sesi pengguna tidak tersedia. Silakan login kembali.')
+      return
+    }
+
+    const masa = normalizeMasa(getCurrentMasa())
+    const tanggalPeriode = getCurrentLocalDate()
+
+    setSaving(true)
+    setSaveSuccess(false)
+    setSaveError(null)
+
+    // Cari record yang sudah ada di DB berdasarkan masa dan tahun saat ini.
+    const existingRow = data.find(row =>
+      normalizeMasa(row.masa) === normalizeMasa(masa) &&
+      getYear(row.tanggal) === CURRENT_YEAR,
+    ) ?? null
+
+    const payload = {
+      total_penghasilan:         totalPenyerahan,
+      total_sd_bulan_ini:        totalPenyerahan,
+      total_ppn_terutang:        totalPPN,
+      total_pmb_ppn_terutang:    totalPM,
+      kompensasi_kelebihan_pm:   parseNumber(perhitunganForm.kompensasi),
+      total_ppn_terutang_final:  calculatedTotalPPNTerutang,
+      ppn_kurang_lebih_bayar_spt: parseNumber(perhitunganForm.ppn_kurang_lebih),
+      ppn_diperhitungkan:        parseNumber(perhitunganForm.ppn_dibayarkan),
+      ppn_kurang_bayar:          calculatedKurangBayarFinal,
+      ntpn_surat_ket_pbk:        perhitunganForm.ntpn.trim(),
+      tgl_bayar:                 perhitunganForm.tgl_bayar || null,
+      tgl_lapor:                 perhitunganForm.tgl_lapor || null,
+      tgl_pengembalian:          perhitunganForm.tgl_pengembalian || null,
+      masa,
+      tanggal:                   tanggalPeriode,
+    }
+
+    try {
+      let storedRow: PPNRow
+
+      if (existingRow) {
+        // UPDATE — record sudah ada di DB
+        const { data: updated, error } = await supabaseClient
+          .from('kontrol_ppn')
+          .update(payload)
+          .eq('id', existingRow.id)
+          .eq('user_id', user.id)
+          .select(KONTROL_PPN_COLUMNS)
+          .single()
+        if (error) throw error
+        storedRow = updated as PPNRow
+        setData(prev => prev.map(row => row.id === existingRow.id ? storedRow : row))
+      } else {
+        // INSERT — record belum ada di DB
+        const { data: inserted, error } = await supabaseClient
+          .from('kontrol_ppn')
+          .insert({ ...payload, user_id: user.id })
+          .select(KONTROL_PPN_COLUMNS)
+          .single()
+        if (error) throw error
+        storedRow = inserted as PPNRow
+        setData(prev => [storedRow, ...prev])
+      }
+
+      const nextSavedData: SavedPerhitungan = {
+        ...perhitunganForm,
+        totalPenyerahan,
+        totalPPN,
+        totalPM,
+        totalPPNTerutang:    calculatedTotalPPNTerutang,
+        ppnKurangBayarFinal: calculatedKurangBayarFinal,
+        savedAt:             new Date().toLocaleString('id-ID'),
+      }
+
+      setSavedData(nextSavedData)
+      setIsFormDirty(false)
+      setSaveSuccess(true)
+      setTimeout(() => setSaveSuccess(false), 2500)
+    } catch (error) {
+      logFetchError('kontrol_ppn save error', error)
+      const message = error && typeof error === 'object' && 'message' in error
+        ? String(error.message)
+        : 'Terjadi kesalahan saat menyimpan data.'
+      setSaveError(`Gagal menyimpan data: ${message}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
   // ── Download PDF (print dialog) ───────────────────────────────────────────
@@ -401,7 +616,6 @@ export default function KontrolPPNPage() {
   @media print { body { padding: 32px; } }
 
   .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; border-bottom: 3px solid #1e40af; padding-bottom: 18px; }
-  .header-title { }
   .header-title h1 { font-size: 20px; font-weight: 800; color: #1e40af; letter-spacing: -0.3px; }
   .header-title p { font-size: 12px; color: #64748b; margin-top: 4px; }
   .header-badge { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 8px 14px; text-align: right; }
@@ -592,6 +806,7 @@ export default function KontrolPPNPage() {
 
         .filter-panel { background: #fff; border: 1px solid #e2e8f0;
                         border-radius: 10px; padding: 12px; margin-bottom: 1rem; }
+        .filter-fields { display: flex; flex-wrap: wrap; gap: 12px; }
         .filter-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
                         color: #64748b; margin-bottom: 5px; display: block; }
         .filter-select { padding: 6px 10px; border-radius: 7px; border: 1px solid #e2e8f0;
@@ -615,7 +830,6 @@ export default function KontrolPPNPage() {
 
         .col-divider { border-left: 2px solid #e2e8f0; }
 
-        /* Action buttons area */
         .action-bar {
           display: flex; gap: 0.75rem; margin-top: 0.75rem;
           padding-top: 1.1rem; border-top: 1px solid #e2e8f0;
@@ -632,6 +846,7 @@ export default function KontrolPPNPage() {
         }
         .btn-save:hover { background: #1d4ed8; transform: translateY(-1px); }
         .btn-save:active { transform: translateY(0); }
+        .btn-save:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
 
         .btn-pdf {
           display: flex; align-items: center; gap: 7px;
@@ -656,6 +871,14 @@ export default function KontrolPPNPage() {
           background: #dcfce7; color: #166534;
           font-size: 0.8rem; font-weight: 600;
           border: 1px solid #bbf7d0;
+          animation: fadeIn .2s ease;
+        }
+        .toast-error {
+          display: flex; align-items: center; gap: 8px;
+          margin-top: 10px; padding: 9px 14px; border-radius: 8px;
+          background: #fef2f2; color: #b91c1c;
+          font-size: 0.8rem; font-weight: 600;
+          border: 1px solid #fecaca;
           animation: fadeIn .2s ease;
         }
         .saved-stamp {
@@ -698,39 +921,63 @@ export default function KontrolPPNPage() {
             </div>
 
             {/* TOOLBAR */}
-            <div className="toolbar">
-              <div className="search-box">
-                <Search size={13} color="#94a3b8" />
-                <input
-                  placeholder="Cari masa atau NTPN..."
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                />
-              </div>
-              <button className="btn" onClick={() => setFilterOpen(!filterOpen)}>
-                <SlidersHorizontal size={13} />
-                Filter
-                <ChevronDown size={12} />
-              </button>
-              {filterMasa && (
-                <button className="btn" onClick={() => setFilterMasa('')}>
-                  <X size={12} /> {filterMasa}
-                </button>
-              )}
-            </div>
+            {!isPerhitunganTab && (
+              <>
+                <div className="toolbar">
+                  <div className="search-box">
+                    <Search size={13} color="#94a3b8" />
+                    <input
+                      placeholder="Cari masa atau NTPN..."
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                    />
+                  </div>
+                  <button className="btn" onClick={() => setFilterOpen(!filterOpen)}>
+                    <SlidersHorizontal size={13} />
+                    Filter
+                    <ChevronDown size={12} />
+                  </button>
+                  {filterMasa && (
+                    <button className="btn" onClick={() => setFilterMasa('')}>
+                      <X size={12} /> {filterMasa}
+                    </button>
+                  )}
+                  {filterTahun && (
+                    <button className="btn" onClick={() => setFilterTahun('')}>
+                      <X size={12} /> Tahun: {filterTahun}
+                    </button>
+                  )}
+                </div>
 
-            {filterOpen && (
-              <div className="filter-panel">
-                <label className="filter-label">Masa Pajak</label>
-                <select
-                  className="filter-select"
-                  value={filterMasa}
-                  onChange={e => setFilterMasa(e.target.value)}
-                >
-                  <option value="">Semua Masa</option>
-                  {MASA_ORDER.map(m => <option key={m}>{m}</option>)}
-                </select>
-              </div>
+                {filterOpen && (
+                  <div className="filter-panel">
+                    <div className="filter-fields">
+                      <div>
+                        <label className="filter-label">Masa Pajak</label>
+                        <select
+                          className="filter-select"
+                          value={filterMasa}
+                          onChange={e => setFilterMasa(e.target.value)}
+                        >
+                          <option value="">Semua Masa</option>
+                          {MASA_ORDER.map(m => <option key={m}>{m}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="filter-label">Tahun</label>
+                        <select
+                          className="filter-select"
+                          value={filterTahun}
+                          onChange={e => setFilterTahun(e.target.value)}
+                        >
+                          <option value="">Semua Tahun</option>
+                          {tahunOptions.map(tahun => <option key={tahun}>{tahun}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
             {/* TABLE WITH TABS */}
@@ -933,7 +1180,7 @@ export default function KontrolPPNPage() {
                           className="inline-input"
                           type="date"
                           value={perhitunganForm.tgl_bayar}
-                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_bayar: e.target.value }))}
+                          onChange={e => updatePerhitunganForm({ tgl_bayar: e.target.value })}
                         />
                       </div>
 
@@ -944,7 +1191,7 @@ export default function KontrolPPNPage() {
                           className="inline-input"
                           type="date"
                           value={perhitunganForm.tgl_lapor}
-                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_lapor: e.target.value }))}
+                          onChange={e => updatePerhitunganForm({ tgl_lapor: e.target.value })}
                         />
                       </div>
 
@@ -955,7 +1202,7 @@ export default function KontrolPPNPage() {
                           className="inline-input"
                           type="date"
                           value={perhitunganForm.tgl_pengembalian}
-                          onChange={e => setPerhitunganForm(prev => ({ ...prev, tgl_pengembalian: e.target.value }))}
+                          onChange={e => updatePerhitunganForm({ tgl_pengembalian: e.target.value })}
                         />
                       </div>
 
@@ -1020,15 +1267,15 @@ export default function KontrolPPNPage() {
                           className="inline-input"
                           type="text"
                           value={perhitunganForm.ntpn}
-                          onChange={e => setPerhitunganForm(prev => ({ ...prev, ntpn: e.target.value }))}
+                          onChange={e => updatePerhitunganForm({ ntpn: e.target.value })}
                         />
                       </div>
 
                       {/* ── ACTION BUTTONS ── */}
                       <div className="action-bar">
-                        <button className="btn-save" onClick={handleSimpan}>
+                        <button className="btn-save" onClick={handleSimpan} disabled={saving}>
                           <Save size={14} />
-                          Simpan
+                          {saving ? 'Menyimpan...' : 'Simpan'}
                         </button>
                         <button
                           className={`btn-pdf ${savedData ? 'active' : 'inactive'}`}
@@ -1040,14 +1287,18 @@ export default function KontrolPPNPage() {
                         </button>
                       </div>
 
-                      {/* Toast sukses */}
                       {saveSuccess && (
                         <div className="toast-success">
                           ✅ Data berhasil disimpan! Tombol Download PDF sekarang aktif.
                         </div>
                       )}
 
-                      {/* Timestamp terakhir simpan */}
+                      {saveError && (
+                        <div className="toast-error">
+                          {saveError}
+                        </div>
+                      )}
+
                       {savedData && !saveSuccess && (
                         <div className="saved-stamp">
                           🕐 Terakhir disimpan: {savedData.savedAt}
