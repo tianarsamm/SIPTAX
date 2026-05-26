@@ -936,21 +936,23 @@ function TagihanStep({ profil, transaksi, hasPPN, hasBupot, onReset, onRollback,
 
 export default function CekPPNPage() {
   const router = useRouter()
-  const { user } = useAuth()
+  const { user, loading: authLoading } = useAuth()
   const initializeRef = useRef(false)
   const [mounted, setMounted] = useState(false)
   const [sellerName, setSellerName] = useState(user?.namaWP || '')
   const [sellerNPWP, setSellerNPWP] = useState(user?.profil?.npwp || '')
 
-  useEffect(() => { if (!user) router.push('/login') }, [user, router])
+  useEffect(() => {
+    if (!authLoading && !user) router.replace('/login')
+  }, [authLoading, user, router])
 
   useEffect(() => {
-    if (!user?.id) return
+    if (authLoading || !user?.id) return
     const fetchSeller = async () => {
       const { data, error } = await supabaseClient
         .from('users')
         .select('nama_wajib_pajak,npwp')
-        .eq('id', user.id)
+        .eq('auth_id', user.id)
         .maybeSingle()
       if (!error && data) {
         setSellerName(data.nama_wajib_pajak || user.namaWP)
@@ -958,12 +960,13 @@ export default function CekPPNPage() {
       }
     }
     fetchSeller()
-  }, [user?.id, user?.namaWP, user?.profil?.npwp])
+  }, [authLoading, user?.id, user?.namaWP, user?.profil?.npwp])
 
   const [currentStep, setCurrentStep] = useState<Step>('input-transaksi')
   const [formData, setFormData] = useState<FormData>({ profil: user?.profil || null, transaksi: null, ppn: null, bupot: null })
 
   useEffect(() => {
+    if (authLoading || !user) return
     if (initializeRef.current) return
     initializeRef.current = true
 
@@ -992,7 +995,7 @@ export default function CekPPNPage() {
     }
 
     setMounted(true)
-  }, [user?.profil])
+  }, [authLoading, user, user?.profil])
 
   // Simpan formData + step aktif ke localStorage setiap kali berubah
   useEffect(() => {
@@ -1048,7 +1051,19 @@ export default function CekPPNPage() {
   const displayRole   = user?.profil?.bidangUsaha || 'Wajib Pajak'
   const displayAvatar = user?.namaWP?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2) || 'U'
 
-  if (!mounted) return null
+  if (authLoading || !mounted) {
+    return (
+      <main style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        color: '#64748b',
+        background: '#f1f5f9',
+      }}>
+        Memuat data...
+      </main>
+    )
+  }
 
   return (
     <>

@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { supabaseClient } from '@/lib/supabaseClient'
-import type { Session, AuthChangeEvent } from '@supabase/supabase-js'
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 export interface ProfilData {
   namaWP: string
@@ -87,31 +87,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ─── Session listener ─────────────────────────────────────────────────────
 
   useEffect(() => {
-    supabaseClient.auth
-      .getSession()
-      .then(async ({ data: { session } }: { data: { session: Session | null } }) => {
-        if (session?.user) {
-          const profil = await fetchProfil(session.user.id)
-          setUser(profil)
+    let isActive = true
+    let latestUpdate = 0
+
+    const applySession = async (session: Session | null) => {
+      const updateId = ++latestUpdate
+
+      try {
+        const nextUser = session?.user
+          ? await fetchProfil(session.user.id)
+          : null
+
+        if (isActive && updateId === latestUpdate) {
+          setUser(nextUser)
         }
-        setLoading(false)
+      } catch {
+        if (isActive && updateId === latestUpdate) {
+          setUser(null)
+        }
+      } finally {
+        if (isActive && updateId === latestUpdate) {
+          setLoading(false)
+        }
+      }
+    }
+
+    void supabaseClient.auth.getSession()
+      .then(({ data: { session } }: { data: { session: Session | null } }) => applySession(session))
+      .catch(() => {
+        if (isActive) {
+          setUser(null)
+          setLoading(false)
+        }
       })
 
     const {
       data: { subscription },
     } = supabaseClient.auth.onAuthStateChange(
-      async (event: AuthChangeEvent, session: Session | null) => {
-        if (session?.user) {
-          const profil = await fetchProfil(session.user.id)
-          setUser(profil)
-        } else {
-          setUser(null)
-        }
-        setLoading(false)
+      (_event: AuthChangeEvent, session: Session | null) => {
+        // Supabase holds its auth lock while this callback runs. Fetch after it releases.
+        setTimeout(() => {
+          if (isActive) {
+            void applySession(session)
+          }
+        }, 0)
       }
     )
 
-    return () => subscription.unsubscribe()
+    return () => {
+      isActive = false
+      subscription.unsubscribe()
+    }
   }, [])
 
   // ─── Register ─────────────────────────────────────────────────────────────
